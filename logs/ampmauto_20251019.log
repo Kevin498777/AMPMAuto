@@ -8,3 +8,9 @@
 2025-10-19 21:22:43,307 - utils.logger - INFO - 📊 Columnas encontradas: ['numero_guia']
 2025-10-19 21:22:43,308 - utils.logger - INFO - 📦 Primeras guías: ['45701236513', '45699071106', '45690629541', '45699071106', '45701236513']
 2025-10-19 21:23:51,314 - utils.logger - INFO - 📋 Reporte generado: reports\reporte_ampm_20251019_212351.xlsx
+2025-10-19 21:55:24,926 - utils.logger - INFO - 📊 Columnas encontradas: ['numero_guia']
+2025-10-19 21:55:24,927 - utils.logger - INFO - 📦 Primeras guías: ['45697536162.0', '45697536150.0', 'nan', '45686165665.0', '45701695087.0']
+2025-10-19 21:58:16,982 - utils.logger - INFO - 📋 Reporte generado: reports\reporte_ampm_20251019_215816.xlsx
+2025-10-19 22:01:43,205 - utils.logger - INFO - 📊 Columnas encontradas: ['numero_guia']
+2025-10-19 22:01:43,205 - utils.logger - INFO - 📦 Primeras guías: ['45686165665', '45701695087']
+2025-10-19 22:02:27,444 - utils.logger - INFO - 📋 Reporte generado: reports\reporte_ampm_20251019_220227.xlsx
