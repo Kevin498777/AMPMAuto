@@ -3,495 +3,899 @@ import sys
 import os
 import pandas as pd
 from datetime import datetime
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                             QPushButton, QLabel, QTextEdit, QProgressBar, 
-                             QFileDialog, QMessageBox, QWidget, QFrame, 
-                             QGroupBox, QTabWidget)
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QPalette, QColor
 import logging
+import traceback
 
-# Importar módulos personalizados
-from automator import AMPMAutomator
-from data_handler import DataHandler
-from report_generator import ReportGenerator
-from utils.config import ConfigManager
-from utils.logger import setup_logger
+# Importar PyQt5 PRIMERO, antes de cualquier otro código
+try:
+    from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
+                                 QPushButton, QLabel, QTextEdit, QProgressBar, 
+                                 QFileDialog, QMessageBox, QWidget, QFrame, 
+                                 QGroupBox, QTabWidget, QCheckBox)
+    from PyQt5.QtCore import Qt, QThread, pyqtSignal
+    from PyQt5.QtGui import QFont
+    PYQT5_AVAILABLE = True
+except ImportError as e:
+    print(f"Error: PyQt5 no está instalado. Instala con: pip install PyQt5")
+    print(f"Error detallado: {e}")
+    PYQT5_AVAILABLE = False
 
-# Configurar logging
-logger = setup_logger()
-
-class AutomationThread(QThread):
-    """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica"""
-    
-    # Señales para comunicación con la interfaz principal
-    progress_updated = pyqtSignal(int, str)
-    log_message = pyqtSignal(str)
-    finished_success = pyqtSignal(dict)
-    finished_error = pyqtSignal(str)
-    
-    def __init__(self, excel_file_path, headless=True):
-        super().__init__()
-        self.excel_file_path = excel_file_path
-        self.headless = headless
-        self.is_running = True
-        
-    def run(self):
+# Solo importar nuestros módulos si PyQt5 está disponible
+if PYQT5_AVAILABLE:
+    # Importar módulos personalizados
+    try:
+        from automator import AMPMAutomatorRobusto as AMPMAutomator
+    except ImportError:
         try:
-            self.log_message.emit("🔍 Iniciando proceso de automatización...")
-            
-            # 1. Leer y validar datos del Excel
-            self.log_message.emit("📊 Leyendo archivo Excel...")
-            data_handler = DataHandler(self.excel_file_path)
-            guias_df = data_handler.read_excel()
-            
-            if guias_df.empty:
-                self.finished_error.emit("El archivo Excel está vacío o no contiene datos válidos")
-                return
+            from automator import AMPMAutomatorRobusto as AMPMAutomator
+        except ImportError:
+            from automator import AMPMAutomator
+
+    # Importar utils
+    try:
+        from utils.config import ConfigManager
+        from utils.logger import setup_logger
+    except ImportError:
+        # Crear clases básicas si no existen los módulos
+        class ConfigManager:
+            def __init__(self):
+                self.ampm_username = os.getenv('AMPM_USERNAME', '')
+                self.ampm_password = os.getenv('AMPM_PASSWORD', '')
+                self.timeout = 30
+        
+        def setup_logger():
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            return logging.getLogger(__name__)
+
+    # Configurar logging
+    logger = setup_logger()
+
+    class DataHandler:
+        """Manejador de datos para archivos Excel"""
+        
+        def __init__(self, excel_file_path):
+            self.excel_file_path = excel_file_path
+        
+        def read_excel(self):
+            """Leer archivo Excel y extraer guías"""
+            try:
+                df = pd.read_excel(self.excel_file_path)
                 
-            self.log_message.emit(f"📦 Se encontraron {len(guias_df)} guías para procesar")
+                # Verificar que tenga la columna necesaria
+                if 'numero_guia' not in df.columns:
+                    # Intentar mapear otras columnas comunes
+                    column_mapping = {
+                        'guia': 'numero_guia',
+                        'número_guia': 'numero_guia', 
+                        'guía': 'numero_guia',
+                        'tracking': 'numero_guia',
+                        'número': 'numero_guia',
+                        'guia_number': 'numero_guia',
+                        'guia_id': 'numero_guia'
+                    }
+                    
+                    for old_col, new_col in column_mapping.items():
+                        if old_col in df.columns:
+                            df = df.rename(columns={old_col: new_col})
+                            logger.info(f"✅ Columna renombrada: '{old_col}' -> 'numero_guia'")
+                            break
+                    else:
+                        # Si no encuentra ninguna columna conocida, usar la primera
+                        first_col = df.columns[0]
+                        df = df.rename(columns={first_col: 'numero_guia'})
+                        logger.info(f"✅ Usando primera columna: '{first_col}' -> 'numero_guia'")
+                
+                # Limpiar y validar números de guía
+                df['numero_guia'] = df['numero_guia'].astype(str).str.strip()
+                
+                logger.info(f"📊 Columnas encontradas: {list(df.columns)}")
+                logger.info(f"📦 Primeras guías: {df['numero_guia'].head().tolist()}")
+                
+                return df
+                
+            except Exception as e:
+                logger.error(f"❌ Error leyendo Excel: {str(e)}")
+                return pd.DataFrame()
+
+    class ReportGenerator:
+        """Generador de reportes"""
+        
+        def __init__(self, results=None):
+            self.results = results or []
+        
+        def generate_report(self, report_data):
+            """Generar reporte de resultados"""
+            try:
+                # Crear directorio de reportes si no existe
+                reports_dir = "reports"
+                os.makedirs(reports_dir, exist_ok=True)
+                
+                # Nombre del archivo con timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                report_path = os.path.join(reports_dir, f"reporte_ampm_{timestamp}.xlsx")
+                
+                # Preparar datos para el reporte
+                report_rows = []
+                for result in report_data.get('results', []):
+                    report_rows.append({
+                        'Guia': result.get('guia_number', 'N/A'),
+                        'Estado': 'EXITOSO' if result.get('success') else 'FALLIDO',
+                        'Mensaje': result.get('message', result.get('error', 'N/A')),
+                        'Tiempo_Procesamiento': f"{result.get('processing_time', 0):.2f}s" if result.get('processing_time') else 'N/A',
+                        'Timestamp': result.get('timestamp', 'N/A'),
+                        'Recuperable': 'Sí' if result.get('recoverable') else 'No',
+                        'Tipo_Error': 'Ya Entregada' if result.get('recoverable') else 'Error Real' if not result.get('success') else 'Éxito'
+                    })
+                
+                # Crear DataFrame y guardar
+                df = pd.DataFrame(report_rows)
+                df.to_excel(report_path, index=False)
+                
+                # Agregar resumen
+                try:
+                    with pd.ExcelWriter(report_path, engine='openpyxl', mode='a') as writer:
+                        success_count = report_data['success']
+                        error_count = report_data['errors']
+                        recovered_count = report_data.get('recovered', 0)
+                        total_count = report_data['total']
+                        
+                        summary_data = {
+                            'Métrica': [
+                                'Total Guías', 
+                                'Guías Exitosas', 
+                                'Guías Ya Entregadas', 
+                                'Errores Reales',
+                                'Efectividad'
+                            ],
+                            'Valor': [
+                                total_count,
+                                success_count, 
+                                recovered_count,
+                                error_count - recovered_count,
+                                f"{(success_count/total_count)*100:.1f}%" if total_count > 0 else '0%'
+                            ],
+                            'Descripción': [
+                                'Total de guías en el archivo Excel',
+                                'Guías procesadas exitosamente',
+                                'Guías que ya estaban entregadas en el sistema',
+                                'Errores que impidieron el procesamiento',
+                                'Porcentaje de guías exitosas del total'
+                            ]
+                        }
+                        summary_df = pd.DataFrame(summary_data)
+                        summary_df.to_excel(writer, sheet_name='Resumen', index=False)
+                except Exception as e:
+                    logger.warning(f"⚠️ No se pudo agregar hoja de resumen: {str(e)}")
+                
+                logger.info(f"📋 Reporte generado: {report_path}")
+                return report_path
+                
+            except Exception as e:
+                logger.error(f"❌ Error generando reporte: {str(e)}")
+                return None
+
+    class AutomationThread(QThread):
+        """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica"""
+        
+        # Señales para comunicación con la interfaz principal
+        progress_updated = pyqtSignal(int, str)
+        log_message = pyqtSignal(str)
+        finished_success = pyqtSignal(dict)
+        finished_error = pyqtSignal(str)
+        
+        def __init__(self, excel_file_path, headless=True):
+            super().__init__()
+            self.excel_file_path = excel_file_path
+            self.headless = headless
+            self.is_running = True
             
-            # 2. Inicializar automator
-            self.log_message.emit("🚀 Inicializando navegador...")
-            automator = AMPMAutomator(headless=self.headless)
-            
-            # 3. Procesar cada guía
-            success_count = 0
-            error_count = 0
-            results = []
-            
-            for index, guia in guias_df.iterrows():
+        def run(self):
+            try:
+                self.log_message.emit("🔍 Iniciando proceso de automatización...")
+                
+                # 1. Leer y validar datos del Excel
+                self.log_message.emit("📊 Leyendo archivo Excel...")
+                data_handler = DataHandler(self.excel_file_path)
+                guias_df = data_handler.read_excel()
+                
+                if guias_df.empty:
+                    self.finished_error.emit("El archivo Excel está vacío o no contiene datos válidos")
+                    return
+                    
+                total_guias = len(guias_df)
+                self.log_message.emit(f"📦 Se encontraron {total_guias} guías para procesar")
+                
+                # Mostrar las guías que se van a procesar
+                guias_list = guias_df['numero_guia'].head(10).tolist()  # Mostrar primeras 10
+                if total_guias > 10:
+                    self.log_message.emit(f"📋 Guías a procesar (primeras 10): {', '.join(guias_list)}...")
+                else:
+                    self.log_message.emit(f"📋 Guías a procesar: {', '.join(guias_list)}")
+                
+                # 2. Inicializar automator
+                self.log_message.emit("🚀 Inicializando navegador...")
+                automator = AMPMAutomator(headless=self.headless)
+                
+                # 3. Procesar cada guía
+                success_count = 0
+                error_count = 0
+                recovered_count = 0
+                results = []
+                
+                for index, guia_data in guias_df.iterrows():
+                    if not self.is_running:
+                        break
+                        
+                    progress = int((index + 1) / total_guias * 100)
+                    guia_number = str(guia_data.get('numero_guia', 'N/A')).strip()
+                    self.progress_updated.emit(progress, f"Procesando guía {index + 1} de {total_guias}")
+                    
+                    try:
+                        self.log_message.emit(f"📝 Procesando guía: {guia_number}")
+                        
+                        # Procesar la guía usando el automator robusto
+                        result = automator.process_shipment_with_retry(guia_data)
+                        
+                        # CORRECCIÓN: Usar el número real de guía en los resultados
+                        result['guia_number'] = guia_number
+                        results.append(result)
+                        
+                        if result['success']:
+                            success_count += 1
+                            processing_time = result.get('processing_time', 0)
+                            self.log_message.emit(f"✅ Guía {guia_number} procesada exitosamente")
+                            self.log_message.emit(f"   ⏱️ Tiempo: {processing_time:.2f}s")
+                        else:
+                            if result.get('recoverable', False):
+                                recovered_count += 1
+                                self.log_message.emit(f"⚠️ GUÍA YA ENTREGADA: {guia_number} - {result.get('error', 'Error desconocido')}")
+                            else:
+                                error_count += 1
+                                self.log_message.emit(f"❌ ERROR: {guia_number} - {result.get('error', 'Error desconocido')}")
+                            
+                    except Exception as e:
+                        error_count += 1
+                        error_msg = f"❌ Error crítico en guía {guia_number}: {str(e)}"
+                        self.log_message.emit(error_msg)
+                        results.append({
+                            'success': False, 
+                            'error': error_msg,
+                            'guia_number': guia_number,
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'recoverable': False
+                        })
+                    
+                    # Pequeña pausa entre guías
+                    if self.is_running:
+                        self.sleep(1)
+                
+                # 4. Cerrar navegador
+                automator.close()
+                
+                # 5. Preparar reporte final - CORREGIDO EL CONTEO
+                if self.is_running:
+                    self.log_message.emit("📋 Generando reporte final...")
+                    
+                    # VERIFICACIÓN: Contar éxitos reales desde los resultados
+                    real_success_count = sum(1 for r in results if r.get('success') == True)
+                    real_recovered_count = sum(1 for r in results if r.get('recoverable') == True and not r.get('success'))
+                    real_error_count = sum(1 for r in results if not r.get('success') and not r.get('recoverable'))
+                    
+                    # Usar los conteos reales en lugar de los acumulados
+                    final_success_count = real_success_count
+                    final_recovered_count = real_recovered_count
+                    final_error_count = real_error_count
+                    
+                    # Log de verificación
+                    self.log_message.emit(f"🔍 VERIFICACIÓN: Éxitos={final_success_count}, Entregadas={final_recovered_count}, Errores={final_error_count}")
+                    
+                    report_data = {
+                        'total': total_guias,
+                        'success': final_success_count,
+                        'errors': final_error_count + final_recovered_count,  # Total de no-éxitos
+                        'recovered': final_recovered_count,
+                        'results': results,
+                        'timestamp': datetime.now(),
+                        'excel_file': self.excel_file_path
+                    }
+                    
+                    self.finished_success.emit(report_data)
+                    
+            except Exception as e:
+                error_msg = f"Error en el hilo de automatización: {str(e)}\n{traceback.format_exc()}"
+                logger.error(error_msg)
+                self.finished_error.emit(f"Error en el proceso: {str(e)}")
+        
+        def sleep(self, seconds):
+            """Sleep que respeta la señal de stop"""
+            for _ in range(seconds * 10):
                 if not self.is_running:
                     break
-                    
-                progress = int((index + 1) / len(guias_df) * 100)
-                self.progress_updated.emit(progress, f"Procesando guía {index + 1} de {len(guias_df)}")
-                
-                try:
-                    self.log_message.emit(f"📝 Procesando guía: {guia.get('numero_guia', 'N/A')}")
-                    
-                    # Aquí irá la lógica de automatización
-                    result = automator.process_shipment(guia)
-                    results.append(result)
-                    
-                    if result['success']:
-                        success_count += 1
-                        self.log_message.emit(f"✅ Guía {guia.get('numero_guia', 'N/A')} procesada exitosamente")
-                    else:
-                        error_count += 1
-                        self.log_message.emit(f"❌ Error en guía {guia.get('numero_guia', 'N/A')}: {result['error']}")
-                        
-                except Exception as e:
-                    error_count += 1
-                    self.log_message.emit(f"❌ Error crítico en guía: {str(e)}")
-                    results.append({'success': False, 'error': str(e)})
-            
-            # 4. Cerrar navegador
-            automator.close()
-            
-            # 5. Generar reporte
-            if self.is_running:
-                self.log_message.emit("📋 Generando reporte final...")
-                report_data = {
-                    'total': len(guias_df),
-                    'success': success_count,
-                    'errors': error_count,
-                    'results': results,
-                    'timestamp': datetime.now()
-                }
-                
-                self.finished_success.emit(report_data)
-                
-        except Exception as e:
-            logger.error(f"Error en el hilo de automatización: {str(e)}")
-            self.finished_error.emit(f"Error en el proceso: {str(e)}")
-    
-    def stop(self):
-        """Detener la ejecución del hilo"""
-        self.is_running = False
-        self.log_message.emit("⏹️ Proceso detenido por el usuario")
+                QThread.msleep(100)
+        
+        def stop(self):
+            """Detener la ejecución del hilo"""
+            self.is_running = False
+            self.log_message.emit("⏹️ Proceso detenido por el usuario")
 
-class MainWindow(QMainWindow):
-    """Ventana principal de la aplicación AMPMAuto"""
-    
-    def __init__(self):
-        super().__init__()
-        self.excel_file_path = None
-        self.automation_thread = None
-        self.config = ConfigManager()
-        self.init_ui()
-        self.apply_styles()
+    class MainWindow(QMainWindow):
+        """Ventana principal de la aplicación AMPMAuto"""
         
-    def init_ui(self):
-        """Inicializar la interfaz de usuario"""
-        self.setWindowTitle("AMPMAuto - Sistema de Automatización de Guías")
-        self.setFixedSize(900, 700)
-        
-        # Widget central
-        central_widget = QWidget()
-        self.setCentralWidget(central_widget)
-        
-        # Layout principal
-        main_layout = QVBoxLayout(central_widget)
-        
-        # Header
-        header = self.create_header()
-        main_layout.addWidget(header)
-        
-        # Contenido principal con tabs
-        tabs = QTabWidget()
-        
-        # Tab de automatización
-        automation_tab = self.create_automation_tab()
-        tabs.addTab(automation_tab, "🚀 Automatización")
-        
-        # Tab de configuración
-        config_tab = self.create_config_tab()
-        tabs.addTab(config_tab, "⚙️ Configuración")
-        
-        main_layout.addWidget(tabs)
-        
-        # Footer
-        footer = self.create_footer()
-        main_layout.addWidget(footer)
-        
-    def create_header(self):
-        """Crear el encabezado de la aplicación"""
-        header_frame = QFrame()
-        header_frame.setFrameStyle(QFrame.StyledPanel)
-        header_layout = QVBoxLayout(header_frame)
-        
-        # Título
-        title = QLabel("AMPMAuto - Sistema de Automatización")
-        title.setAlignment(Qt.AlignCenter)
-        title_font = QFont()
-        title_font.setPointSize(18)
-        title_font.setBold(True)
-        title.setFont(title_font)
-        
-        # Subtítulo
-        subtitle = QLabel("Carga automática de guías de envío en Grupo AMPM")
-        subtitle.setAlignment(Qt.AlignCenter)
-        subtitle_font = QFont()
-        subtitle_font.setPointSize(12)
-        subtitle.setFont(subtitle_font)
-        
-        header_layout.addWidget(title)
-        header_layout.addWidget(subtitle)
-        
-        return header_frame
-    
-    def create_automation_tab(self):
-        """Crear la pestaña de automatización"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Grupo de selección de archivo
-        file_group = QGroupBox("1. Seleccionar Archivo Excel")
-        file_layout = QVBoxLayout(file_group)
-        
-        file_selection_layout = QHBoxLayout()
-        self.file_label = QLabel("No se ha seleccionado ningún archivo")
-        self.file_label.setStyleSheet("color: #666; font-style: italic;")
-        
-        self.select_file_btn = QPushButton("📁 Seleccionar Excel")
-        self.select_file_btn.clicked.connect(self.select_excel_file)
-        
-        file_selection_layout.addWidget(self.file_label)
-        file_selection_layout.addWidget(self.select_file_btn)
-        file_layout.addLayout(file_selection_layout)
-        
-        # Grupo de progreso
-        progress_group = QGroupBox("2. Progreso de Ejecución")
-        progress_layout = QVBoxLayout(progress_group)
-        
-        # Barra de progreso
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setVisible(False)
-        
-        # Etiqueta de estado
-        self.status_label = QLabel("Listo para comenzar")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        
-        # Área de logs
-        self.log_text = QTextEdit()
-        self.log_text.setReadOnly(True)
-        self.log_text.setMaximumHeight(200)
-        
-        progress_layout.addWidget(self.status_label)
-        progress_layout.addWidget(self.progress_bar)
-        progress_layout.addWidget(QLabel("Logs de ejecución:"))
-        progress_layout.addWidget(self.log_text)
-        
-        # Grupo de controles
-        controls_group = QGroupBox("3. Controles")
-        controls_layout = QHBoxLayout(controls_group)
-        
-        self.start_btn = QPushButton("🚀 Iniciar Automatización")
-        self.start_btn.clicked.connect(self.start_automation)
-        self.start_btn.setEnabled(False)
-        
-        self.stop_btn = QPushButton("⏹️ Detener")
-        self.stop_btn.clicked.connect(self.stop_automation)
-        self.stop_btn.setEnabled(False)
-        
-        self.generate_report_btn = QPushButton("📊 Generar Reporte")
-        self.generate_report_btn.clicked.connect(self.generate_report)
-        self.generate_report_btn.setEnabled(False)
-        
-        controls_layout.addWidget(self.start_btn)
-        controls_layout.addWidget(self.stop_btn)
-        controls_layout.addWidget(self.generate_report_btn)
-        
-        # Agregar grupos al layout
-        layout.addWidget(file_group)
-        layout.addWidget(progress_group)
-        layout.addWidget(controls_group)
-        
-        return tab
-    
-    def create_config_tab(self):
-        """Crear la pestaña de configuración"""
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        config_group = QGroupBox("Configuración de la Aplicación")
-        config_layout = QVBoxLayout(config_group)
-        
-        # Opciones de ejecución
-        self.headless_checkbox = QPushButton("🌐 Modo Headless: Activado")
-        self.headless_checkbox.setCheckable(True)
-        self.headless_checkbox.setChecked(True)
-        self.headless_checkbox.clicked.connect(self.toggle_headless)
-        
-        # Información del sistema
-        info_label = QLabel(
-            f"AMPMAuto v1.0\n"
-            f"Python: {sys.version.split()[0]}\n"
-            f"Directorio de trabajo: {os.getcwd()}"
-        )
-        info_label.setStyleSheet("background-color: #f5f5f5; padding: 10px; border-radius: 5px;")
-        
-        config_layout.addWidget(QLabel("Opciones de ejecución:"))
-        config_layout.addWidget(self.headless_checkbox)
-        config_layout.addWidget(QLabel("Información del sistema:"))
-        config_layout.addWidget(info_label)
-        
-        layout.addWidget(config_group)
-        layout.addStretch()
-        
-        return tab
-    
-    def create_footer(self):
-        """Crear el pie de página"""
-        footer = QLabel("© 2024 AMPMAuto - Sistema desarrollado para Grupo AMPM")
-        footer.setAlignment(Qt.AlignCenter)
-        footer.setStyleSheet("color: #888; padding: 10px; border-top: 1px solid #ddd;")
-        return footer
-    
-    def apply_styles(self):
-        """Aplicar estilos a la interfaz"""
-        self.setStyleSheet("""
-            QMainWindow {
-                background-color: #f8f9fa;
-            }
-            QGroupBox {
-                font-weight: bold;
-                border: 2px solid #dc3545;
-                border-radius: 8px;
-                margin-top: 10px;
-                padding-top: 10px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px 0 5px;
-                color: #dc3545;
-            }
-            QPushButton {
-                background-color: #dc3545;
-                color: white;
-                border: none;
-                padding: 8px 15px;
-                border-radius: 4px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #c82333;
-            }
-            QPushButton:disabled {
-                background-color: #6c757d;
-            }
-            QPushButton:checked {
-                background-color: #28a745;
-            }
-            QProgressBar {
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                text-align: center;
-            }
-            QProgressBar::chunk {
-                background-color: #28a745;
-                width: 20px;
-            }
-            QTextEdit {
-                border: 1px solid #ccc;
-                border-radius: 4px;
-                padding: 5px;
-            }
-        """)
-    
-    def select_excel_file(self):
-        """Seleccionar archivo Excel"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, 
-            "Seleccionar archivo Excel", 
-            "", 
-            "Excel Files (*.xlsx *.xls)"
-        )
-        
-        if file_path:
-            self.excel_file_path = file_path
-            self.file_label.setText(os.path.basename(file_path))
-            self.start_btn.setEnabled(True)
-            self.log_text.append(f"📁 Archivo seleccionado: {file_path}")
-    
-    def toggle_headless(self):
-        """Alternar modo headless"""
-        if self.headless_checkbox.isChecked():
-            self.headless_checkbox.setText("🌐 Modo Headless: Activado")
-        else:
-            self.headless_checkbox.setText("🌐 Modo Headless: Desactivado")
-    
-    def start_automation(self):
-        """Iniciar el proceso de automatización"""
-        if not self.excel_file_path:
-            QMessageBox.warning(self, "Advertencia", "Por favor selecciona un archivo Excel primero.")
-            return
-        
-        # Deshabilitar botones durante la ejecución
-        self.start_btn.setEnabled(False)
-        self.select_file_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
-        self.generate_report_btn.setEnabled(False)
-        
-        # Mostrar elementos de progreso
-        self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.status_label.setText("Iniciando automatización...")
-        
-        # Limpiar logs anteriores
-        self.log_text.clear()
-        
-        # Crear y ejecutar hilo de automatización
-        headless = self.headless_checkbox.isChecked()
-        self.automation_thread = AutomationThread(self.excel_file_path, headless)
-        
-        # Conectar señales
-        self.automation_thread.progress_updated.connect(self.update_progress)
-        self.automation_thread.log_message.connect(self.add_log_message)
-        self.automation_thread.finished_success.connect(self.automation_finished)
-        self.automation_thread.finished_error.connect(self.automation_error)
-        
-        # Iniciar hilo
-        self.automation_thread.start()
-    
-    def stop_automation(self):
-        """Detener el proceso de automatización"""
-        if self.automation_thread and self.automation_thread.isRunning():
-            self.automation_thread.stop()
-            self.automation_thread.quit()
-            self.automation_thread.wait()
+        def __init__(self):
+            super().__init__()
+            self.excel_file_path = None
+            self.automation_thread = None
+            self.current_report_data = None
+            self.config = ConfigManager()
+            self.init_ui()
+            self.apply_styles()
             
-            self.add_log_message("⏹️ Proceso detenido por el usuario")
-            self.status_label.setText("Proceso detenido")
+        def init_ui(self):
+            """Inicializar la interfaz de usuario"""
+            self.setWindowTitle("AMPMAuto - Sistema de Automatización de Guías")
+            self.setMinimumSize(900, 700)
+            
+            # Widget central
+            central_widget = QWidget()
+            self.setCentralWidget(central_widget)
+            
+            # Layout principal
+            main_layout = QVBoxLayout(central_widget)
+            main_layout.setSpacing(10)
+            main_layout.setContentsMargins(15, 15, 15, 15)
+            
+            # Header
+            header = self.create_header()
+            main_layout.addWidget(header)
+            
+            # Contenido principal con tabs
+            tabs = QTabWidget()
+            
+            # Tab de automatización
+            automation_tab = self.create_automation_tab()
+            tabs.addTab(automation_tab, "🚀 Automatización")
+            
+            # Tab de configuración
+            config_tab = self.create_config_tab()
+            tabs.addTab(config_tab, "⚙️ Configuración")
+            
+            main_layout.addWidget(tabs)
+            
+            # Footer
+            footer = self.create_footer()
+            main_layout.addWidget(footer)
+            
+        def create_header(self):
+            """Crear el encabezado de la aplicación"""
+            header_frame = QFrame()
+            header_frame.setFrameStyle(QFrame.StyledPanel)
+            header_layout = QVBoxLayout(header_frame)
+            
+            # Título
+            title = QLabel("AMPMAuto - Sistema de Automatización")
+            title.setAlignment(Qt.AlignCenter)
+            title_font = QFont()
+            title_font.setPointSize(18)
+            title_font.setBold(True)
+            title.setFont(title_font)
+            
+            # Subtítulo
+            subtitle = QLabel("Carga automática de guías de envío en Grupo AMPM")
+            subtitle.setAlignment(Qt.AlignCenter)
+            subtitle_font = QFont()
+            subtitle_font.setPointSize(12)
+            subtitle.setFont(subtitle_font)
+            
+            header_layout.addWidget(title)
+            header_layout.addWidget(subtitle)
+            
+            return header_frame
+        
+        def create_automation_tab(self):
+            """Crear la pestaña de automatización"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setSpacing(15)
+            
+            # Grupo de selección de archivo
+            file_group = QGroupBox("1. Seleccionar Archivo Excel")
+            file_layout = QVBoxLayout(file_group)
+            
+            file_selection_layout = QHBoxLayout()
+            self.file_label = QLabel("No se ha seleccionado ningún archivo")
+            self.file_label.setStyleSheet("color: #666; font-style: italic;")
+            self.file_label.setWordWrap(True)
+            
+            self.select_file_btn = QPushButton("📁 Seleccionar Excel")
+            self.select_file_btn.clicked.connect(self.select_excel_file)
+            self.select_file_btn.setMinimumWidth(150)
+            
+            file_selection_layout.addWidget(self.file_label, 1)
+            file_selection_layout.addWidget(self.select_file_btn)
+            file_layout.addLayout(file_selection_layout)
+            
+            # Grupo de progreso
+            progress_group = QGroupBox("2. Progreso de Ejecución")
+            progress_layout = QVBoxLayout(progress_group)
+            
+            # Barra de progreso
+            self.progress_bar = QProgressBar()
+            self.progress_bar.setVisible(False)
+            
+            # Etiqueta de estado
+            self.status_label = QLabel("Listo para comenzar")
+            self.status_label.setAlignment(Qt.AlignCenter)
+            self.status_label.setStyleSheet("font-weight: bold; padding: 5px;")
+            
+            # Área de logs
+            self.log_text = QTextEdit()
+            self.log_text.setReadOnly(True)
+            self.log_text.setMaximumHeight(250)
+            self.log_text.setPlaceholderText("Los logs de ejecución aparecerán aquí...")
+            
+            progress_layout.addWidget(self.status_label)
+            progress_layout.addWidget(self.progress_bar)
+            progress_layout.addWidget(QLabel("Logs de ejecución:"))
+            progress_layout.addWidget(self.log_text)
+            
+            # Grupo de controles
+            controls_group = QGroupBox("3. Controles")
+            controls_layout = QHBoxLayout(controls_group)
+            
+            self.start_btn = QPushButton("🚀 Iniciar Automatización")
+            self.start_btn.clicked.connect(self.start_automation)
+            self.start_btn.setEnabled(False)
+            self.start_btn.setMinimumHeight(40)
+            
+            self.stop_btn = QPushButton("⏹️ Detener")
+            self.stop_btn.clicked.connect(self.stop_automation)
+            self.stop_btn.setEnabled(False)
+            self.stop_btn.setMinimumHeight(40)
+            
+            self.generate_report_btn = QPushButton("📊 Generar Reporte")
+            self.generate_report_btn.clicked.connect(self.generate_report)
+            self.generate_report_btn.setEnabled(False)
+            self.generate_report_btn.setMinimumHeight(40)
+            
+            controls_layout.addWidget(self.start_btn)
+            controls_layout.addWidget(self.stop_btn)
+            controls_layout.addWidget(self.generate_report_btn)
+            
+            # Agregar grupos al layout
+            layout.addWidget(file_group)
+            layout.addWidget(progress_group)
+            layout.addWidget(controls_group)
+            layout.addStretch()
+            
+            return tab
+        
+        def create_config_tab(self):
+            """Crear la pestaña de configuración"""
+            tab = QWidget()
+            layout = QVBoxLayout(tab)
+            layout.setSpacing(15)
+            
+            config_group = QGroupBox("Configuración de la Aplicación")
+            config_layout = QVBoxLayout(config_group)
+            
+            # Opciones de ejecución
+            config_layout.addWidget(QLabel("Opciones de ejecución:"))
+            
+            headless_layout = QHBoxLayout()
+            self.headless_checkbox = QCheckBox("Modo Headless (navegador oculto)")
+            self.headless_checkbox.setChecked(True)
+            headless_layout.addWidget(self.headless_checkbox)
+            headless_layout.addStretch()
+            config_layout.addLayout(headless_layout)
+            
+            # Información del sistema
+            info_label = QLabel(
+                f"AMPMAuto v1.0\n"
+                f"Python: {sys.version.split()[0]}\n"
+                f"Directorio de trabajo: {os.getcwd()}\n\n"
+                f"Características:\n"
+                f"• Manejo robusto de errores\n"
+                f"• Detección automática de modales\n"
+                f"• Reintentos inteligentes\n"
+                f"• Reportes detallados"
+            )
+            info_label.setStyleSheet("""
+                background-color: #f8f9fa; 
+                padding: 15px; 
+                border-radius: 5px; 
+                border: 1px solid #dee2e6;
+                line-height: 1.4;
+            """)
+            info_label.setWordWrap(True)
+            
+            config_layout.addWidget(QLabel("Información del sistema:"))
+            config_layout.addWidget(info_label)
+            
+            layout.addWidget(config_group)
+            layout.addStretch()
+            
+            return tab
+        
+        def create_footer(self):
+            """Crear el pie de página"""
+            footer = QLabel("© 2024 AMPMAuto - Sistema desarrollado para Grupo AMPM")
+            footer.setAlignment(Qt.AlignCenter)
+            footer.setStyleSheet("color: #6c757d; padding: 10px; border-top: 1px solid #dee2e6; margin-top: 10px;")
+            return footer
+        
+        def apply_styles(self):
+            """Aplicar estilos a la interfaz"""
+            self.setStyleSheet("""
+                QMainWindow {
+                    background-color: #f8f9fa;
+                    font-family: Segoe UI, Arial, sans-serif;
+                }
+                QGroupBox {
+                    font-weight: bold;
+                    border: 2px solid #dc3545;
+                    border-radius: 8px;
+                    margin-top: 10px;
+                    padding-top: 15px;
+                    background-color: white;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 8px 0 8px;
+                    color: #dc3545;
+                    font-size: 12px;
+                }
+                QPushButton {
+                    background-color: #dc3545;
+                    color: white;
+                    border: none;
+                    padding: 10px 20px;
+                    border-radius: 6px;
+                    font-weight: bold;
+                    font-size: 12px;
+                    min-width: 120px;
+                }
+                QPushButton:hover {
+                    background-color: #c82333;
+                }
+                QPushButton:disabled {
+                    background-color: #6c757d;
+                    color: #adb5bd;
+                }
+                QPushButton:pressed {
+                    background-color: #bd2130;
+                }
+                QProgressBar {
+                    border: 1px solid #ccc;
+                    border-radius: 6px;
+                    text-align: center;
+                    height: 25px;
+                    font-weight: bold;
+                }
+                QProgressBar::chunk {
+                    background-color: #28a745;
+                    border-radius: 5px;
+                }
+                QTextEdit {
+                    border: 1px solid #ced4da;
+                    border-radius: 6px;
+                    padding: 8px;
+                    background-color: white;
+                    font-family: Consolas, Monaco, monospace;
+                    font-size: 11px;
+                }
+                QTabWidget::pane {
+                    border: 1px solid #dee2e6;
+                    border-radius: 6px;
+                    background-color: white;
+                }
+                QTabBar::tab {
+                    background-color: #e9ecef;
+                    border: 1px solid #dee2e6;
+                    border-bottom: none;
+                    padding: 8px 16px;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    margin-right: 2px;
+                }
+                QTabBar::tab:selected {
+                    background-color: white;
+                    border-bottom: 1px solid white;
+                    margin-bottom: -1px;
+                }
+                QTabBar::tab:hover {
+                    background-color: #dae0e5;
+                }
+                QCheckBox {
+                    spacing: 8px;
+                    font-weight: normal;
+                }
+                QCheckBox::indicator {
+                    width: 18px;
+                    height: 18px;
+                    border-radius: 3px;
+                    border: 2px solid #6c757d;
+                }
+                QCheckBox::indicator:checked {
+                    background-color: #dc3545;
+                    border-color: #dc3545;
+                }
+            """)
+        
+        def select_excel_file(self):
+            """Seleccionar archivo Excel"""
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, 
+                "Seleccionar archivo Excel", 
+                "", 
+                "Excel Files (*.xlsx *.xls);;All Files (*)"
+            )
+            
+            if file_path:
+                self.excel_file_path = file_path
+                file_name = os.path.basename(file_path)
+                self.file_label.setText(f"📁 {file_name}")
+                self.start_btn.setEnabled(True)
+                self.add_log_message(f"✅ Archivo seleccionado: {file_path}")
+                
+                # Mostrar preview del archivo
+                try:
+                    df = pd.read_excel(file_path)
+                    self.add_log_message(f"📊 Archivo contiene {len(df)} guías")
+                    if len(df) > 0:
+                        # Mostrar las primeras 5 guías como preview
+                        sample_guias = df.iloc[:5]['numero_guia'].astype(str).tolist()
+                        self.add_log_message(f"📋 Primeras guías: {', '.join(sample_guias)}")
+                except Exception as e:
+                    self.add_log_message(f"⚠️ No se pudo leer el archivo: {str(e)}")
+        
+        def start_automation(self):
+            """Iniciar el proceso de automatización"""
+            if not self.excel_file_path:
+                QMessageBox.warning(self, "Advertencia", "Por favor selecciona un archivo Excel primero.")
+                return
+            
+            # Verificar que el archivo existe
+            if not os.path.exists(self.excel_file_path):
+                QMessageBox.critical(self, "Error", "El archivo seleccionado no existe.")
+                return
+            
+            # Deshabilitar botones durante la ejecución
+            self.start_btn.setEnabled(False)
+            self.select_file_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.generate_report_btn.setEnabled(False)
+            
+            # Mostrar elementos de progreso
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.status_label.setText("Iniciando automatización...")
+            self.status_label.setStyleSheet("color: #dc3545; font-weight: bold;")
+            
+            # Limpiar logs anteriores
+            self.log_text.clear()
+            
+            # Crear y ejecutar hilo de automatización
+            headless = self.headless_checkbox.isChecked()
+            self.automation_thread = AutomationThread(self.excel_file_path, headless)
+            
+            # Conectar señales
+            self.automation_thread.progress_updated.connect(self.update_progress)
+            self.automation_thread.log_message.connect(self.add_log_message)
+            self.automation_thread.finished_success.connect(self.automation_finished)
+            self.automation_thread.finished_error.connect(self.automation_error)
+            
+            # Iniciar hilo
+            self.automation_thread.start()
+            
+            self.add_log_message("🚀 Iniciando proceso de automatización...")
+            self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
+            self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
+        
+        def stop_automation(self):
+            """Detener el proceso de automatización"""
+            if self.automation_thread and self.automation_thread.isRunning():
+                reply = QMessageBox.question(
+                    self, 
+                    "Confirmar Detención", 
+                    "¿Estás seguro de que quieres detener el proceso?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.automation_thread.stop()
+                    self.add_log_message("⏹️ Solicitando detención del proceso...")
+                    self.status_label.setText("Deteniendo...")
+        
+        def update_progress(self, value, message):
+            """Actualizar barra de progreso y estado"""
+            self.progress_bar.setValue(value)
+            self.status_label.setText(message)
+            
+            # Cambiar color según progreso
+            if value < 30:
+                self.status_label.setStyleSheet("color: #dc3545; font-weight: bold;")
+            elif value < 70:
+                self.status_label.setStyleSheet("color: #fd7e14; font-weight: bold;")
+            else:
+                self.status_label.setStyleSheet("color: #28a745; font-weight: bold;")
+        
+        def add_log_message(self, message):
+            """Agregar mensaje al área de logs"""
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self.log_text.append(f"[{timestamp}] {message}")
+            # Auto-scroll al final
+            scrollbar = self.log_text.verticalScrollBar()
+            scrollbar.setValue(scrollbar.maximum())
+        
+        def automation_finished(self, report_data):
+            """Proceso finalizado exitosamente"""
+            self.current_report_data = report_data
+            
+            self.add_log_message("✅" * 50)
+            self.add_log_message("🎉 PROCESO COMPLETADO EXITOSAMENTE")
+            self.add_log_message("✅" * 50)
+            
+            success_count = report_data['success']
+            recovered_count = report_data.get('recovered', 0)
+            total_count = report_data['total']
+            real_errors = report_data['errors'] - recovered_count  # Errores reales
+            
+            self.add_log_message(f"📊 RESUMEN FINAL:")
+            self.add_log_message(f"   📦 Total de guías: {total_count}")
+            self.add_log_message(f"   ✅ Guías exitosas: {success_count}")
+            self.add_log_message(f"   ⚠️ Guías ya entregadas: {recovered_count}")
+            self.add_log_message(f"   ❌ Errores reales: {real_errors}")
+            
+            if total_count > 0:
+                effectiveness = (success_count / total_count) * 100
+                self.add_log_message(f"   📈 Efectividad: {effectiveness:.1f}%")
+            
+            # Mostrar guías exitosas específicamente
+            if success_count > 0:
+                successful_guias = [r['guia_number'] for r in report_data['results'] if r.get('success')]
+                self.add_log_message(f"   🎯 Guías exitosas: {', '.join(successful_guias)}")
+            
+            self.status_label.setText("Proceso completado exitosamente")
+            self.status_label.setStyleSheet("color: #28a745; font-weight: bold;")
+            self.progress_bar.setValue(100)
+            
+            # Habilitar botones
+            self.stop_btn.setEnabled(False)
+            self.select_file_btn.setEnabled(True)
+            self.generate_report_btn.setEnabled(True)
+            
+            # Generar reporte automáticamente
+            self.generate_report()
+            
+            # Mostrar resumen
+            QMessageBox.information(
+                self, 
+                "Proceso Completado", 
+                f"✅ Automatización finalizada exitosamente!\n\n"
+                f"📦 Total de guías procesadas: {total_count}\n"
+                f"✅ Guías exitosas: {success_count}\n"  
+                f"⚠️ Guías ya entregadas: {recovered_count}\n"
+                f"❌ Errores reales: {real_errors}\n"
+                f"📈 Efectividad: {effectiveness:.1f}%\n\n"
+                f"El reporte detallado se ha guardado automáticamente."
+            )
+        
+        def automation_error(self, error_message):
+            """Error en el proceso de automatización"""
+            self.add_log_message("❌" * 50)
+            self.add_log_message("💥 ERROR EN EL PROCESO")
+            self.add_log_message("❌" * 50)
+            self.add_log_message(f"❌ {error_message}")
+            
+            self.status_label.setText("Error en el proceso")
+            self.status_label.setStyleSheet("color: #dc3545; font-weight: bold;")
+            
+            QMessageBox.critical(
+                self, 
+                "Error en la Automatización", 
+                f"Ocurrió un error durante la ejecución:\n\n{error_message}\n\n"
+                f"Por favor verifica:\n"
+                f"• Tu conexión a internet\n"
+                f"• Las credenciales de AMPM\n"
+                f"• El formato del archivo Excel"
+            )
+            
             self.reset_ui()
-    
-    def update_progress(self, value, message):
-        """Actualizar barra de progreso y estado"""
-        self.progress_bar.setValue(value)
-        self.status_label.setText(message)
-    
-    def add_log_message(self, message):
-        """Agregar mensaje al área de logs"""
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.append(f"[{timestamp}] {message}")
-        # Auto-scroll al final
-        self.log_text.verticalScrollBar().setValue(
-            self.log_text.verticalScrollBar().maximum()
-        )
-    
-    def automation_finished(self, report_data):
-        """Proceso finalizado exitosamente"""
-        self.add_log_message(f"✅ Proceso completado!")
-        self.add_log_message(f"📊 Resultados: {report_data['success']} exitosas, {report_data['errors']} errores de {report_data['total']} totales")
         
-        self.status_label.setText("Proceso completado exitosamente")
-        self.progress_bar.setValue(100)
+        def reset_ui(self):
+            """Restablecer la interfaz a su estado inicial"""
+            self.stop_btn.setEnabled(False)
+            self.select_file_btn.setEnabled(True)
+            self.start_btn.setEnabled(True)
+            self.progress_bar.setVisible(False)
         
-        # Generar reporte automáticamente
-        self.generate_report_btn.setEnabled(True)
-        self.generate_report_btn.click()  # Generar reporte automáticamente
-        
-        self.reset_ui()
-        
-        # Mostrar resumen
-        QMessageBox.information(
-            self, 
-            "Proceso Completado", 
-            f"✅ Automatización finalizada\n\n"
-            f"📦 Total de guías: {report_data['total']}\n"
-            f"✅ Exitosa: {report_data['success']}\n"
-            f"❌ Errores: {report_data['errors']}\n\n"
-            f"El reporte se ha guardado en la carpeta 'reports/'"
-        )
-    
-    def automation_error(self, error_message):
-        """Error en el proceso de automatización"""
-        self.add_log_message(f"❌ Error: {error_message}")
-        self.status_label.setText("Error en el proceso")
-        
-        QMessageBox.critical(self, "Error", f"Ocurrió un error durante la automatización:\n\n{error_message}")
-        self.reset_ui()
-    
-    def reset_ui(self):
-        """Restablecer la interfaz a su estado inicial"""
-        self.stop_btn.setEnabled(False)
-        self.select_file_btn.setEnabled(True)
-        self.generate_report_btn.setEnabled(True)
-    
-    def generate_report(self):
-        """Generar reporte de resultados"""
-        try:
-            # En una implementación real, aquí se generaría el reporte con los datos
-            report_generator = ReportGenerator()
-            report_path = report_generator.generate_report()
+        def generate_report(self):
+            """Generar reporte de resultados"""
+            if not self.current_report_data:
+                QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
+                return
             
-            self.add_log_message(f"📋 Reporte generado: {report_path}")
-            QMessageBox.information(self, "Reporte Generado", f"El reporte se ha guardado en:\n{report_path}")
-            
-        except Exception as e:
-            self.add_log_message(f"❌ Error al generar reporte: {str(e)}")
-            QMessageBox.warning(self, "Error", f"No se pudo generar el reporte:\n{str(e)}")
+            try:
+                report_generator = ReportGenerator()
+                report_path = report_generator.generate_report(self.current_report_data)
+                
+                if report_path:
+                    self.add_log_message(f"📋 Reporte generado: {report_path}")
+                    
+                    # Preguntar si quieren abrir el reporte
+                    reply = QMessageBox.question(
+                        self,
+                        "Reporte Generado",
+                        f"El reporte se ha guardado en:\n{report_path}\n\n¿Deseas abrir el archivo?",
+                        QMessageBox.Yes | QMessageBox.No,
+                        QMessageBox.Yes
+                    )
+                    
+                    if reply == QMessageBox.Yes:
+                        try:
+                            os.startfile(report_path)  # Windows
+                        except:
+                            # Fallback para otros sistemas
+                            try:
+                                import subprocess
+                                if sys.platform == "darwin":  # macOS
+                                    subprocess.run(["open", report_path])
+                                else:  # Linux
+                                    subprocess.run(["xdg-open", report_path])
+                            except:
+                                self.add_log_message("⚠️ No se pudo abrir el reporte automáticamente")
+                            
+                else:
+                    QMessageBox.warning(self, "Error", "No se pudo generar el reporte.")
+                    
+            except Exception as e:
+                error_msg = f"❌ Error al generar reporte: {str(e)}"
+                self.add_log_message(error_msg)
+                QMessageBox.warning(self, "Error", f"No se pudo generar el reporte:\n{str(e)}")
 
 def main():
     """Función principal de la aplicación"""
+    if not PYQT5_AVAILABLE:
+        print("ERROR: PyQt5 no está disponible.")
+        print("Por favor instala PyQt5 con: pip install PyQt5")
+        input("Presiona Enter para salir...")
+        return 1
+        
     try:
+        # Verificar pandas
+        try:
+            import pandas as pd
+        except ImportError:
+            print("ERROR: pandas no está instalado.")
+            print("Por favor instala pandas con: pip install pandas openpyxl")
+            input("Presiona Enter para salir...")
+            return 1
+
         # Crear aplicación
         app = QApplication(sys.argv)
         app.setApplicationName("AMPMAuto")
         app.setApplicationVersion("1.0")
+        app.setApplicationDisplayName("AMPMAuto - Automatización de Guías")
         
         # Crear y mostrar ventana principal
         window = MainWindow()
         window.show()
         
         # Ejecutar aplicación
-        sys.exit(app.exec_())
+        return app.exec_()
         
     except Exception as e:
-        logger.error(f"Error en la aplicación: {str(e)}")
-        QMessageBox.critical(None, "Error Crítico", f"La aplicación no pudo iniciarse:\n{str(e)}")
+        error_msg = f"Error en la aplicación: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        QMessageBox.critical(
+            None, 
+            "Error Crítico", 
+            f"La aplicación no pudo iniciarse:\n\n{str(e)}\n\n"
+            f"Por favor contacta al administrador del sistema."
+        )
+        return 1
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

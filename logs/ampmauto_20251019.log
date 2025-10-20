@@ -1,0 +1,10 @@
+2025-10-19 20:57:30,956 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 20:57:47,814 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 20:58:01,537 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 20:58:06,127 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 20:58:43,602 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 20:58:58,326 - utils.logger - ERROR - Error en la aplicación: cannot access local variable 'QApplication' where it is not associated with a value
+2025-10-19 21:08:33,325 - utils.logger - INFO - Reporte generado: reports\reporte_ampm_20251019_210833.xlsx
+2025-10-19 21:22:43,307 - utils.logger - INFO - 📊 Columnas encontradas: ['numero_guia']
+2025-10-19 21:22:43,308 - utils.logger - INFO - 📦 Primeras guías: ['45701236513', '45699071106', '45690629541', '45699071106', '45701236513']
+2025-10-19 21:23:51,314 - utils.logger - INFO - 📋 Reporte generado: reports\reporte_ampm_20251019_212351.xlsx
