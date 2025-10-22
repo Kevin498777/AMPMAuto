@@ -1,0 +1,3 @@
+2025-10-21 15:27:50,634 - utils.logger - INFO - 📊 Columnas encontradas: ['numero_guia']
+2025-10-21 15:27:50,637 - utils.logger - INFO - 📦 Primeras guías: ['45686165665', '45701695087']
+2025-10-21 15:28:44,924 - utils.logger - INFO - 📋 Reporte generado: reports\reporte_ampm_20251021_152844.xlsx

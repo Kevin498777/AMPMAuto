@@ -1,13 +1,31 @@
-# utils/logger.py
+# utils/logger.py - VERSIÓN COMPLETA CORREGIDA
 import logging
 import os
 from datetime import datetime
+import sys
+
+def get_app_data_path():
+    """Obtener ruta en AppData/Local para archivos de usuario"""
+    try:
+        # Para Windows: usar AppData/Local
+        if os.name == 'nt':  # Windows
+            app_data = os.getenv('LOCALAPPDATA')
+            if app_data:
+                app_path = os.path.join(app_data, 'AMPMAuto')
+                os.makedirs(app_path, exist_ok=True)
+                return app_path
+        
+        # Para otros sistemas o fallback
+        return os.path.join(os.path.expanduser('~'), '.ampmauto')
+    except:
+        return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 def setup_logger(name=__name__, log_level=logging.INFO):
-    """Configura el logger para la aplicación"""
+    """Configura el logger para la aplicación - VERSIÓN CORREGIDA"""
     
-    # Crear el directorio de logs si no existe
-    log_dir = "logs"
+    # Usar carpeta con permisos de escritura
+    base_dir = get_app_data_path()
+    log_dir = os.path.join(base_dir, "logs")
     os.makedirs(log_dir, exist_ok=True)
     
     # Configurar el logger
@@ -28,11 +46,17 @@ def setup_logger(name=__name__, log_level=logging.INFO):
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
-    # Handler para archivo
-    log_file = os.path.join(log_dir, f"ampmauto_{datetime.now().strftime('%Y%m%d')}.log")
-    file_handler = logging.FileHandler(log_file, encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
+    try:
+        # Handler para archivo - en carpeta con permisos
+        log_file = os.path.join(log_dir, f"ampmauto_{datetime.now().strftime('%Y%m%d')}.log")
+        file_handler = logging.FileHandler(log_file, encoding='utf-8')
+        file_handler.setFormatter(formatter)
+        logger.addHandler(file_handler)
+        
+        logger.info(f"Logs guardados en: {log_file}")
+    except Exception as e:
+        # Fallback: solo consola si no se puede escribir archivo
+        logger.warning(f"No se pudo crear archivo de log: {e}")
     
     return logger
 

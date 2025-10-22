@@ -1,4 +1,4 @@
-# automator_mejorado_modal_fix.py - VERSIÓN CORREGIDA PARA MODALES
+# automator.py - VERSIÓN MEJORADA CON MANEJO DE NAN Y LOADING
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -11,6 +11,7 @@ import time
 import logging
 import os
 import pandas as pd
+import re
 from utils.config import ConfigManager
 
 # Configurar logging
@@ -56,6 +57,19 @@ class AMPMAutomatorRobusto:
         except Exception as e:
             logger.error(f"❌ Error al inicializar el navegador: {str(e)}")
             raise
+    
+    def _wait_for_loading_to_disappear(self, timeout=10):
+        """Esperar a que desaparezca el elemento de loading - NUEVA FUNCIÓN"""
+        try:
+            logger.info("⏳ Esperando a que desaparezca el loading...")
+            WebDriverWait(self.driver, timeout).until(
+                EC.invisibility_of_element_located((By.ID, "divLoading"))
+            )
+            logger.info("✅ Loading desapareció")
+        except TimeoutException:
+            logger.warning("⚠️ Timeout esperando loading, continuando...")
+        except Exception as e:
+            logger.warning(f"⚠️ Error verificando loading: {e}")
     
     def check_and_close_modals(self):
         """Verificar y cerrar modales específicos de AMPM - MEJORADO"""
@@ -324,12 +338,32 @@ class AMPMAutomatorRobusto:
             return False
 
     def _process_single_shipment_with_timeout(self, guia_data):
-        """Procesa una guía individual con manejo de modales"""
+        """Procesa una guía individual con manejo de modales - VERSIÓN MEJORADA"""
         import time
         start_time = time.time()
         
         guia_number = guia_data.get('numero_guia', 'N/A')
-        logger.info(f"📦 Procesando guía: [CONFIDENCIAL]")
+        
+        # ✅ MEJOR VALIDACIÓN DE GUÍAS VACÍAS O INVÁLIDAS
+        guia_str = str(guia_number).strip() if guia_number is not None else ''
+        
+        if (not guia_str or 
+            guia_str.lower() in ['nan', 'none', 'null', ''] or
+            guia_str == 'N/A' or
+            pd.isna(guia_number)):
+            
+            logger.warning(f"⚠️ Guía vacía o inválida detectada: '{guia_number}' - Saltando...")
+            return {
+                'success': False,
+                'guia_number': 'INVÁLIDA',
+                'error': "Número de guía vacío o inválido",
+                'recoverable': True,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+        
+        # Remover .0 de números flotantes
+        guia_final = guia_str.replace('.0', '') if '.0' in guia_str else guia_str
+        logger.info(f"📦 Procesando guía: {guia_final}")
         
         def check_timeout():
             if time.time() - start_time > self.max_processing_time:
@@ -349,14 +383,6 @@ class AMPMAutomatorRobusto:
         
         check_timeout()
         
-        # Extraer solo números si la guía tiene formato mixto
-        if not str(guia_number).isdigit():
-            import re
-            numeros = re.findall(r'\d+', str(guia_number))
-            if numeros:
-                guia_number = numeros[0]
-                logger.info(f"🔢 Guía convertida: [CONFIDENCIAL] → {guia_number}")
-        
         try:
             # Obtener el campo de guía
             guia_field = self.wait.until(EC.presence_of_element_located((By.ID, "GuiaId")))
@@ -365,14 +391,14 @@ class AMPMAutomatorRobusto:
             self.check_and_close_modals()
             
             # Ingresar guía
-            if not self.safe_clear_and_send_keys(guia_field, str(guia_number)):
+            if not self.safe_clear_and_send_keys(guia_field, guia_final):
                 return {
                     'success': False,
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': "No se pudo ingresar el número de guía"
                 }
             
-            logger.info(f"✅ Guía [CONFIDENCIAL] ingresada, esperando detalles...")
+            logger.info(f"✅ Guía {guia_final} ingresada, esperando detalles...")
             
             # Presionar Enter para buscar
             guia_field.send_keys(Keys.ENTER)
@@ -384,9 +410,9 @@ class AMPMAutomatorRobusto:
             if self.check_and_close_modals():
                 return {
                     'success': False,
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': "La guía ya se encuentra entregada",
-                    'recoverable': True  # Indica que es un error recuperable
+                    'recoverable': True
                 }
             
             check_timeout()
@@ -396,35 +422,41 @@ class AMPMAutomatorRobusto:
             if error_message:
                 return {
                     'success': False,
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': f"Error en guía: {error_message}",
                     'recoverable': "entregada" in error_message.lower()
                 }
             
             check_timeout()
             
+            # ✅ ESPERAR A QUE DESAPAREZCA EL LOADING ANTES DE HACER CLICK
+            self._wait_for_loading_to_disappear()
+            
             # Buscar botón Entregar
             entregar_button = self.wait.until(
-                EC.presence_of_element_located((By.ID, "btnEntregar"))
+                EC.element_to_be_clickable((By.ID, "btnEntregar"))
             )
             
             if not self.safe_click(entregar_button, "botón Entregar"):
                 return {
                     'success': False,
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': "No se pudo hacer click en el botón Entregar"
                 }
             
-            logger.info(f"✅ Botón Entregar presionado para guía [CONFIDENCIAL]")
+            logger.info(f"✅ Botón Entregar presionado para guía {guia_final}")
             
             check_timeout()
-            time.sleep(3)  # Esperar procesamiento
+            
+            # ✅ ESPERAR PROCESAMIENTO Y VERIFICAR LOADING
+            self._wait_for_loading_to_disappear()
+            time.sleep(2)  # Espera adicional
             
             # Verificar modales después de entregar
             if self.check_and_close_modals():
                 return {
                     'success': False, 
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': "Error al entregar - modal detectado",
                     'recoverable': True
                 }
@@ -436,17 +468,17 @@ class AMPMAutomatorRobusto:
                                 ['entregada', 'duplicada', 'repetida'])
                 return {
                     'success': False,
-                    'guia_number': '[CONFIDENCIAL]',
+                    'guia_number': guia_final,
                     'error': f"Error al entregar: {error_message}",
                     'recoverable': recoverable
                 }
             
-            logger.info(f"✅ Guía [CONFIDENCIAL] procesada exitosamente")
+            logger.info(f"✅ Guía {guia_final} procesada exitosamente")
             
             # Limpiar campos para siguiente guía
             try:
                 nuevo_button = self.wait.until(
-                    EC.presence_of_element_located((By.ID, "btnNuevo"))
+                    EC.element_to_be_clickable((By.ID, "btnNuevo"))
                 )
                 if self.safe_click(nuevo_button, "botón Nuevo"):
                     logger.info("✅ Campos limpiados con botón Nuevo")
@@ -459,14 +491,14 @@ class AMPMAutomatorRobusto:
             
             return {
                 'success': True,
-                'guia_number': '[CONFIDENCIAL]',
+                'guia_number': guia_final,
                 'message': 'Guía registrada exitosamente en AMPM',
                 'processing_time': processing_time,
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
             }
             
         except Exception as e:
-            logger.error(f"❌ Error en procesamiento de guía: {str(e)}")
+            logger.error(f"❌ Error en procesamiento de guía {guia_final}: {str(e)}")
             # Intentar recuperar el estado
             self.check_and_close_modals()
             raise
@@ -514,104 +546,14 @@ class AMPMAutomatorRobusto:
             except:
                 pass
 
+# COMENTADO: Función de prueba removida para distribución
+"""
 # FUNCIÓN DE PRUEBA ESPECÍFICA PARA MODALES
 def test_ampm_modal_fix():
-    """Función para probar el manejo específico de modales"""
-    print("🚀 SISTEMA AMPM - VERSIÓN CORREGIDA PARA MODALES")
-    print("=" * 70)
-    print("🎯 ESPECÍFICO para: 'La guía ya se encuentra entregada'")
-    print("=" * 70)
-    
-    excel_file_path = r"D:\Proyecto\Pruebas\prueba1.xlsx"
-    
-    if not os.path.exists(excel_file_path):
-        print(f"❌ Archivo no encontrado: {excel_file_path}")
-        return False
-    
-    try:
-        df = pd.read_excel(excel_file_path)
-        
-        if len(df) == 0:
-            print("❌ El Excel está vacío")
-            return False
-            
-        total_guias = len(df)
-        
-        print(f"✅ Archivo cargado: {os.path.basename(excel_file_path)}")
-        print(f"📦 Total de guías: {total_guias}")
-        print(f"🛡️  Sistema MEJORADO con:")
-        print(f"   • Detección automática de modales")
-        print(f"   • Cierre de 'Guía ya entregada'") 
-        print(f"   • Continuación automática después de errores recuperables")
-        print(f"   • 3 reintentos por guía")
-        print("-" * 70)
-        
-    except Exception as e:
-        print(f"❌ Error leyendo Excel: {e}")
-        return False
-    
-    automator = AMPMAutomatorRobusto(headless=False)
-    try:
-        success_count = 0
-        error_count = 0
-        recovered_count = 0
-        results = []
-        
-        for index, row in df.iterrows():
-            guia_data = row.to_dict()
-            
-            print(f"\n🔍 PROCESANDO GUÍA {index + 1}/{total_guias}")
-            
-            # Usar procesamiento con reintentos
-            result = automator.process_shipment_with_retry(guia_data)
-            results.append(result)
-            
-            if result['success']:
-                success_count += 1
-                print(f"   ✅ ÉXITO: Procesada correctamente")
-                print(f"   ⏱️  Tiempo: {result.get('processing_time', 'N/A'):.2f}s")
-            else:
-                error_count += 1
-                error_msg = result.get('error', 'Error desconocido')
-                
-                # Clasificar el error
-                if result.get('recoverable', False):
-                    recovered_count += 1
-                    print(f"   ⚠️  GUÍA YA ENTREGADA: {error_msg}")
-                    print(f"   🔄 CONTINUANDO con siguiente guía...")
-                else:
-                    print(f"   ❌ ERROR: {error_msg}")
-                    print(f"   🔄 CONTINUANDO con siguiente guía...")
-            
-            # Pausa entre guías
-            time.sleep(2)
-        
-        print("\n" + "=" * 70)
-        print("🎯 RESUMEN FINAL:")
-        print(f"   ✅ Guías exitosas: {success_count}/{total_guias}")
-        print(f"   ⚠️  Guías ya entregadas: {recovered_count}/{total_guias}")
-        print(f"   ❌ Guías con error: {error_count - recovered_count}/{total_guias}")
-        
-        if total_guias > 0:
-            effectiveness = (success_count / total_guias) * 100
-            print(f"   📊 Efectividad: {effectiveness:.1f}%")
-        
-        # Mostrar resumen
-        if error_count > 0:
-            print(f"\n📋 DETALLE:")
-            for i, result in enumerate(results):
-                if not result['success']:
-                    status = "⚠️ YA ENTREGADA" if result.get('recoverable') else "❌ ERROR"
-                    print(f"   Guía {i+1}: {status} - {result.get('error', 'N/A')}")
-        
-        return success_count > 0 or recovered_count > 0
-        
-    except Exception as e:
-        print(f"❌ ERROR GLOBAL en prueba: {str(e)}")
-        return False
-    finally:
-        automator.close()
+    # ... código de prueba comentado ...
+    pass
 
 if __name__ == "__main__":
     # Ejecutar prueba específica para modales
     test_ampm_modal_fix()
+"""

@@ -51,13 +51,13 @@ if PYQT5_AVAILABLE:
     logger = setup_logger()
 
     class DataHandler:
-        """Manejador de datos para archivos Excel"""
+        """Manejador de datos para archivos Excel - VERSIÓN MEJORADA"""
         
         def __init__(self, excel_file_path):
             self.excel_file_path = excel_file_path
         
         def read_excel(self):
-            """Leer archivo Excel y extraer guías"""
+            """Leer archivo Excel y extraer guías - CON FILTRO MEJORADO"""
             try:
                 df = pd.read_excel(self.excel_file_path)
                 
@@ -85,17 +85,120 @@ if PYQT5_AVAILABLE:
                         df = df.rename(columns={first_col: 'numero_guia'})
                         logger.info(f"✅ Usando primera columna: '{first_col}' -> 'numero_guia'")
                 
-                # Limpiar y validar números de guía
-                df['numero_guia'] = df['numero_guia'].astype(str).str.strip()
+                # ✅ NUEVO: FILTRADO AGREGIVO DE NAN Y VACÍOS
+                df = self._clean_and_filter_data(df)
                 
-                logger.info(f"📊 Columnas encontradas: {list(df.columns)}")
-                logger.info(f"📦 Primeras guías: {df['numero_guia'].head().tolist()}")
+                logger.info(f"📊 Archivo contiene {len(df)} guías válidas después de limpieza")
+                
+                if len(df) > 0:
+                    sample_guias = df['numero_guia'].head(5).tolist()
+                    logger.info(f"📋 Primeras guías válidas: {', '.join(map(str, sample_guias))}")
+                else:
+                    logger.warning("⚠️ No hay guías válidas después de la limpieza")
                 
                 return df
-                
+                    
             except Exception as e:
                 logger.error(f"❌ Error leyendo Excel: {str(e)}")
                 return pd.DataFrame()
+        
+        def _clean_and_filter_data(self, df):
+            """Limpiar y filtrar datos - ELIMINA NAN, VACÍOS, .0 y FILTRA POR TIPO DE GUÍA"""
+            try:
+                original_count = len(df)
+                
+                # Convertir a string y limpiar
+                df['numero_guia'] = df['numero_guia'].astype(str)
+                
+                # Filtrar filas inválidas
+                df = df[
+                    (~df['numero_guia'].isna()) &
+                    (df['numero_guia'].str.strip() != '') &
+                    (df['numero_guia'].str.lower() != 'nan') &
+                    (df['numero_guia'] != 'None') &
+                    (df['numero_guia'] != 'null') &
+                    (~df['numero_guia'].str.contains(r'^\s*nan\s*$', case=False, na=False))
+                ]
+                
+                # Remover .0 de los números flotantes
+                df['numero_guia'] = df['numero_guia'].str.replace(r'\.0$', '', regex=True)
+                
+                # Limpiar espacios
+                df['numero_guia'] = df['numero_guia'].str.strip()
+                
+                # ✅ NUEVO: FILTRADO POR TIPO DE GUÍA - SOLO MERCADO LIBRE
+                df = self._filter_by_shipping_type(df)
+                
+                # Log de limpieza
+                removed_count = original_count - len(df)
+                if removed_count > 0:
+                    logger.warning(f"⚠️ Se eliminaron {removed_count} guías inválidas/vacías/otras transportistas")
+                    logger.info(f"📊 Guías válidas de Mercado Libre para procesar: {len(df)}")
+                else:
+                    logger.info(f"📊 Todas las guías son válidas de Mercado Libre: {len(df)}")
+                
+                return df
+                    
+            except Exception as e:
+                logger.error(f"❌ Error en limpieza de datos: {str(e)}")
+                return df
+
+        def _filter_by_shipping_type(self, df):
+            """Filtrar guías por tipo de transportista - SOLO MERCADO LIBRE"""
+            try:
+                original_count = len(df)
+                
+                # Patrones para identificar tipos de guías
+                mercado_libre_pattern = r'^45\d{9}$'  # Guías Mercado Libre: empiezan con 45, 11 dígitos
+                shein_pattern = r'^\d{10,12}$'        # Guías Shein: 10-12 dígitos (pero no empiezan con 45)
+                ampm_pattern = r'^AMPM'               # Guías AMPM: empiezan con AMPM
+                
+                # Clasificar guías
+                mercado_libre_guias = df['numero_guia'].str.match(mercado_libre_pattern, na=False)
+                shein_guias = ~mercado_libre_guias & df['numero_guia'].str.match(shein_pattern, na=False)
+                ampm_guias = df['numero_guia'].str.match(ampm_pattern, na=False)
+                otras_guias = ~(mercado_libre_guias | shein_guias | ampm_guias)
+                
+                # Contar por tipo
+                count_mercado_libre = mercado_libre_guias.sum()
+                count_shein = shein_guias.sum()
+                count_ampm = ampm_guias.sum()
+                count_otras = otras_guias.sum()
+                
+                # Log informativo
+                logger.info("📋 CLASIFICACIÓN DE GUÍAS DETECTADA:")
+                logger.info(f"   🟢 Mercado Libre: {count_mercado_libre} guías (45 + 9 dígitos)")
+                logger.info(f"   🔵 Shein: {count_shein} guías (10-12 dígitos)")
+                logger.info(f"   🟡 AMPM: {count_ampm} guías (prefijo AMPM)")
+                logger.info(f"   ⚫ Otras: {count_otras} guías (otros formatos)")
+                
+                # Mostrar ejemplos de cada tipo
+                if count_mercado_libre > 0:
+                    ejemplos = df[mercado_libre_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos Mercado Libre: {', '.join(ejemplos)}")
+                
+                if count_shein > 0:
+                    ejemplos = df[shein_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos Shein: {', '.join(ejemplos)}")
+                    logger.warning("   ⚠️  Las guías Shein requieren nombre del receptor - NO PROCESABLES")
+                
+                if count_ampm > 0:
+                    ejemplos = df[ampm_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos AMPM: {', '.join(ejemplos)}")
+                
+                # ✅ FILTRO CRÍTICO: Mantener SOLO guías de Mercado Libre
+                df_filtrado = df[mercado_libre_guias].copy()
+                
+                removed_by_type = original_count - len(df_filtrado)
+                if removed_by_type > 0:
+                    logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO son de Mercado Libre")
+                    logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías de Mercado Libre")
+                
+                return df_filtrado
+                
+            except Exception as e:
+                logger.error(f"❌ Error en filtrado por tipo: {str(e)}")
+                return df
 
     class ReportGenerator:
         """Generador de reportes"""
@@ -103,20 +206,41 @@ if PYQT5_AVAILABLE:
         def __init__(self, results=None):
             self.results = results or []
         
-        def generate_report(self, report_data):
-            """Generar reporte de resultados"""
+        def generate_report(self):
+            """Generar reporte de resultados - VERSIÓN CORREGIDA Y CON DEBUG"""
+            print("🔍 [DEBUG] generate_report() iniciado")
+            
+            if not self.current_report_data:
+                error_msg = "❌ No hay datos de reporte disponibles"
+                print(f"🔍 [DEBUG] {error_msg}")
+                QMessageBox.warning(self, "Advertencia", error_msg)
+                return None
+            
             try:
-                # Crear directorio de reportes si no existe
+                print("🔍 [DEBUG] Creando ReportGenerator...")
+                
+                # ✅ USAR SIEMPRE LA MISMA UBICACIÓN
                 reports_dir = "reports"
                 os.makedirs(reports_dir, exist_ok=True)
+                print(f"🔍 [DEBUG] Directorio de reportes: {os.path.abspath(reports_dir)}")
                 
-                # Nombre del archivo con timestamp
+                # ✅ GENERACIÓN DIRECTA SIN DEPENDENCIAS EXTERNAS
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 report_path = os.path.join(reports_dir, f"reporte_ampm_{timestamp}.xlsx")
                 
-                # Preparar datos para el reporte
+                print(f"🔍 [DEBUG] Intentando crear: {report_path}")
+                print(f"🔍 [DEBUG] Datos disponibles: {self.current_report_data.keys()}")
+                
+                # VERIFICAR ESTRUCTURA DE DATOS
+                if 'results' not in self.current_report_data:
+                    error_msg = "❌ No hay resultados en los datos del reporte"
+                    print(f"🔍 [DEBUG] {error_msg}")
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return None
+                
+                # PREPARAR DATOS
                 report_rows = []
-                for result in report_data.get('results', []):
+                for result in self.current_report_data.get('results', []):
                     report_rows.append({
                         'Guia': result.get('guia_number', 'N/A'),
                         'Estado': 'EXITOSO' if result.get('success') else 'FALLIDO',
@@ -127,51 +251,35 @@ if PYQT5_AVAILABLE:
                         'Tipo_Error': 'Ya Entregada' if result.get('recoverable') else 'Error Real' if not result.get('success') else 'Éxito'
                     })
                 
-                # Crear DataFrame y guardar
+                print(f"🔍 [DEBUG] {len(report_rows)} filas preparadas para el reporte")
+                
+                # CREAR DATAFRAME Y GUARDAR
                 df = pd.DataFrame(report_rows)
                 df.to_excel(report_path, index=False)
                 
-                # Agregar resumen
-                try:
-                    with pd.ExcelWriter(report_path, engine='openpyxl', mode='a') as writer:
-                        success_count = report_data['success']
-                        error_count = report_data['errors']
-                        recovered_count = report_data.get('recovered', 0)
-                        total_count = report_data['total']
-                        
-                        summary_data = {
-                            'Métrica': [
-                                'Total Guías', 
-                                'Guías Exitosas', 
-                                'Guías Ya Entregadas', 
-                                'Errores Reales',
-                                'Efectividad'
-                            ],
-                            'Valor': [
-                                total_count,
-                                success_count, 
-                                recovered_count,
-                                error_count - recovered_count,
-                                f"{(success_count/total_count)*100:.1f}%" if total_count > 0 else '0%'
-                            ],
-                            'Descripción': [
-                                'Total de guías en el archivo Excel',
-                                'Guías procesadas exitosamente',
-                                'Guías que ya estaban entregadas en el sistema',
-                                'Errores que impidieron el procesamiento',
-                                'Porcentaje de guías exitosas del total'
-                            ]
-                        }
-                        summary_df = pd.DataFrame(summary_data)
-                        summary_df.to_excel(writer, sheet_name='Resumen', index=False)
-                except Exception as e:
-                    logger.warning(f"⚠️ No se pudo agregar hoja de resumen: {str(e)}")
-                
-                logger.info(f"📋 Reporte generado: {report_path}")
-                return report_path
-                
+                # VERIFICAR QUE SE CREÓ
+                if os.path.exists(report_path):
+                    file_size = os.path.getsize(report_path)
+                    print(f"🔍 [DEBUG] ✅ Reporte creado exitosamente: {report_path} ({file_size} bytes)")
+                    self.add_log_message(f"📋 Reporte generado: {report_path}")
+                    
+                    # MOSTRAR UBICACIÓN ABSOLUTA
+                    absolute_path = os.path.abspath(report_path)
+                    self.add_log_message(f"📁 Ubicación: {absolute_path}")
+                    
+                    return report_path
+                else:
+                    error_msg = "❌ El archivo de reporte no se creó"
+                    print(f"🔍 [DEBUG] {error_msg}")
+                    QMessageBox.warning(self, "Error", error_msg)
+                    return None
+                    
             except Exception as e:
-                logger.error(f"❌ Error generando reporte: {str(e)}")
+                error_msg = f"❌ Error crítico al generar reporte: {str(e)}"
+                print(f"🔍 [DEBUG] {error_msg}")
+                print(f"🔍 [DEBUG] Traceback: {traceback.format_exc()}")
+                self.add_log_message(error_msg)
+                QMessageBox.critical(self, "Error", error_msg)
                 return None
 
     class AutomationThread(QThread):
@@ -199,18 +307,18 @@ if PYQT5_AVAILABLE:
                 guias_df = data_handler.read_excel()
                 
                 if guias_df.empty:
-                    self.finished_error.emit("El archivo Excel está vacío o no contiene datos válidos")
+                    self.finished_error.emit("El archivo Excel está vacío o no contiene guías válidas de Mercado Libre")
                     return
                     
                 total_guias = len(guias_df)
-                self.log_message.emit(f"📦 Se encontraron {total_guias} guías para procesar")
+                self.log_message.emit(f"📦 Se encontraron {total_guias} guías VÁLIDAS de Mercado Libre para procesar")
                 
                 # Mostrar las guías que se van a procesar
-                guias_list = guias_df['numero_guia'].head(10).tolist()  # Mostrar primeras 10
+                guias_list = guias_df['numero_guia'].head(10).tolist()
                 if total_guias > 10:
-                    self.log_message.emit(f"📋 Guías a procesar (primeras 10): {', '.join(guias_list)}...")
+                    self.log_message.emit(f"📋 Guías a procesar (primeras 10): {', '.join(map(str, guias_list))}...")
                 else:
-                    self.log_message.emit(f"📋 Guías a procesar: {', '.join(guias_list)}")
+                    self.log_message.emit(f"📋 Guías a procesar: {', '.join(map(str, guias_list))}")
                 
                 # 2. Inicializar automator
                 self.log_message.emit("🚀 Inicializando navegador...")
@@ -497,7 +605,9 @@ if PYQT5_AVAILABLE:
                 f"• Manejo robusto de errores\n"
                 f"• Detección automática de modales\n"
                 f"• Reintentos inteligentes\n"
-                f"• Reportes detallados"
+                f"• Reportes detallados\n"
+                f"• Filtrado automático de guías inválidas\n"
+                f"• Manejo mejorado de loading"
             )
             info_label.setStyleSheet("""
                 background-color: #f8f9fa; 
@@ -641,11 +751,25 @@ if PYQT5_AVAILABLE:
                 # Mostrar preview del archivo
                 try:
                     df = pd.read_excel(file_path)
-                    self.add_log_message(f"📊 Archivo contiene {len(df)} guías")
-                    if len(df) > 0:
+                    original_count = len(df)
+                    
+                    # Aplicar limpieza para el preview
+                    data_handler = DataHandler(file_path)
+                    df_clean = data_handler.read_excel()
+                    clean_count = len(df_clean)
+                    
+                    self.add_log_message(f"📊 Archivo original: {original_count} guías")
+                    self.add_log_message(f"📊 Después de limpieza: {clean_count} guías válidas")
+                    
+                    if clean_count > 0:
                         # Mostrar las primeras 5 guías como preview
-                        sample_guias = df.iloc[:5]['numero_guia'].astype(str).tolist()
-                        self.add_log_message(f"📋 Primeras guías: {', '.join(sample_guias)}")
+                        sample_guias = df_clean['numero_guia'].head(5).tolist()
+                        self.add_log_message(f"📋 Primeras guías válidas: {', '.join(map(str, sample_guias))}")
+                    
+                    if original_count > clean_count:
+                        removed = original_count - clean_count
+                        self.add_log_message(f"⚠️ Se eliminarán {removed} guías inválidas/vacías automáticamente")
+                        
                 except Exception as e:
                     self.add_log_message(f"⚠️ No se pudo leer el archivo: {str(e)}")
         
@@ -691,6 +815,7 @@ if PYQT5_AVAILABLE:
             self.add_log_message("🚀 Iniciando proceso de automatización...")
             self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
+            self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
         
         def stop_automation(self):
             """Detener el proceso de automatización"""
@@ -755,7 +880,10 @@ if PYQT5_AVAILABLE:
             # Mostrar guías exitosas específicamente
             if success_count > 0:
                 successful_guias = [r['guia_number'] for r in report_data['results'] if r.get('success')]
-                self.add_log_message(f"   🎯 Guías exitosas: {', '.join(successful_guias)}")
+                if len(successful_guias) <= 10:
+                    self.add_log_message(f"   🎯 Guías exitosas: {', '.join(successful_guias)}")
+                else:
+                    self.add_log_message(f"   🎯 Guías exitosas: {len(successful_guias)} guías procesadas correctamente")
             
             self.status_label.setText("Proceso completado exitosamente")
             self.status_label.setStyleSheet("color: #28a745; font-weight: bold;")
@@ -766,8 +894,13 @@ if PYQT5_AVAILABLE:
             self.select_file_btn.setEnabled(True)
             self.generate_report_btn.setEnabled(True)
             
-            # Generar reporte automáticamente
-            self.generate_report()
+            # ✅ GENERAR REPORTE AUTOMÁTICAMENTE
+            report_path = self.generate_report()
+            
+            if report_path:
+                self.add_log_message(f"📋 Reporte guardado en: {report_path}")
+            else:
+                self.add_log_message("❌ No se pudo generar el reporte automáticamente")
             
             # Mostrar resumen
             QMessageBox.information(
@@ -812,48 +945,57 @@ if PYQT5_AVAILABLE:
             self.progress_bar.setVisible(False)
         
         def generate_report(self):
-            """Generar reporte de resultados"""
-            if not self.current_report_data:
-                QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
-                return
-            
+            """Generar reporte de resultados - VERSIÓN CORREGIDA CON RUTA CORRECTA"""
             try:
-                report_generator = ReportGenerator()
-                report_path = report_generator.generate_report(self.current_report_data)
+                # ✅ USAR LA MISMA RUTA QUE LOS LOGS (AppData/Local/AMPMAuto/reports/)
+                from utils.logger import get_app_data_path
+                base_dir = get_app_data_path()
+                reports_dir = os.path.join(base_dir, "reports")
+                os.makedirs(reports_dir, exist_ok=True)
                 
-                if report_path:
-                    self.add_log_message(f"📋 Reporte generado: {report_path}")
-                    
-                    # Preguntar si quieren abrir el reporte
-                    reply = QMessageBox.question(
-                        self,
-                        "Reporte Generado",
-                        f"El reporte se ha guardado en:\n{report_path}\n\n¿Deseas abrir el archivo?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.Yes
-                    )
-                    
-                    if reply == QMessageBox.Yes:
-                        try:
-                            os.startfile(report_path)  # Windows
-                        except:
-                            # Fallback para otros sistemas
-                            try:
-                                import subprocess
-                                if sys.platform == "darwin":  # macOS
-                                    subprocess.run(["open", report_path])
-                                else:  # Linux
-                                    subprocess.run(["xdg-open", report_path])
-                            except:
-                                self.add_log_message("⚠️ No se pudo abrir el reporte automáticamente")
-                            
-                else:
-                    QMessageBox.warning(self, "Error", "No se pudo generar el reporte.")
+                print(f"🔍 [DEBUG] Ruta de reportes: {reports_dir}")
+                
+                if not self.current_report_data:
+                    QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
+                    return None
+                
+                # Generar nombre de archivo
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                report_path = os.path.join(reports_dir, f"reporte_ampm_{timestamp}.xlsx")
+                
+                print(f"🔍 [DEBUG] Intentando crear reporte en: {report_path}")
+                
+                # Preparar datos
+                report_rows = []
+                for result in self.current_report_data.get('results', []):
+                    report_rows.append({
+                        'Guia': result.get('guia_number', 'N/A'),
+                        'Estado': 'EXITOSO' if result.get('success') else 'FALLIDO',
+                        'Mensaje': result.get('message', result.get('error', 'N/A')),
+                        'Tiempo_Procesamiento': f"{result.get('processing_time', 0):.2f}s" if result.get('processing_time') else 'N/A',
+                        'Timestamp': result.get('timestamp', 'N/A'),
+                        'Recuperable': 'Sí' if result.get('recoverable') else 'No',
+                        'Tipo_Error': 'Ya Entregada' if result.get('recoverable') else 'Error Real' if not result.get('success') else 'Éxito'
+                    })
+                
+                # Crear DataFrame y guardar
+                df = pd.DataFrame(report_rows)
+                df.to_excel(report_path, index=False)
+                
+                print(f"🔍 [DEBUG] Reporte creado exitosamente: {report_path}")
+                
+                # Mostrar en logs de la interfaz
+                self.add_log_message(f"📋 Reporte generado: {report_path}")
+                
+                return report_path
                     
             except Exception as e:
-                error_msg = f"❌ Error al generar reporte: {str(e)}"
+                error_msg = f"❌ Error generando reporte: {str(e)}"
+                print(f"🔍 [DEBUG] {error_msg}")
+                import traceback
+                print(f"🔍 [DEBUG] Traceback: {traceback.format_exc()}")
                 self.add_log_message(error_msg)
-                QMessageBox.warning(self, "Error", f"No se pudo generar el reporte:\n{str(e)}")
+                return None
 
 def main():
     """Función principal de la aplicación"""

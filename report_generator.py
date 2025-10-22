@@ -1,20 +1,33 @@
-# report_generator.py
+# report_generator.py - VERSIÓN COMPLETA CORREGIDA
 import os
 import pandas as pd
 from datetime import datetime
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors
+import sys
 import logging
 
 logger = logging.getLogger(__name__)
 
+def get_app_data_path():
+    """Obtener ruta en AppData/Local para archivos de usuario"""
+    try:
+        if os.name == 'nt':  # Windows
+            app_data = os.getenv('LOCALAPPDATA')
+            if app_data:
+                app_path = os.path.join(app_data, 'AMPMAuto')
+                os.makedirs(app_path, exist_ok=True)
+                return app_path
+        return os.path.join(os.path.expanduser('~'), '.ampmauto')
+    except:
+        return os.path.dirname(os.path.abspath(sys.argv[0]))
+
 class ReportGenerator:
-    def __init__(self, output_dir="reports"):
+    def __init__(self, output_dir=None):
+        # Usar carpeta con permisos
+        if output_dir is None:
+            output_dir = os.path.join(get_app_data_path(), "reports")
         self.output_dir = output_dir
-        # Crear directorio si no existe
         os.makedirs(self.output_dir, exist_ok=True)
+        logger.info(f"Reportes se guardarán en: {self.output_dir}")
     
     def generate_report(self, report_data=None):
         """Genera un reporte en PDF y Excel con los resultados de la automatización"""
@@ -35,24 +48,40 @@ class ReportGenerator:
                     ]
                 }
             
-            # Generar reporte PDF
-            pdf_path = os.path.join(self.output_dir, f"reporte_ampm_{timestamp}.pdf")
-            self._generate_pdf_report(pdf_path, report_data)
-            
             # Generar reporte Excel
             excel_path = os.path.join(self.output_dir, f"reporte_ampm_{timestamp}.xlsx")
             self._generate_excel_report(excel_path, report_data)
             
-            logger.info(f"Reportes generados: {pdf_path} y {excel_path}")
-            return pdf_path
+            # Intentar generar PDF si reportlab está disponible
+            pdf_path = None
+            try:
+                from reportlab.lib.pagesizes import letter
+                from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+                from reportlab.lib.styles import getSampleStyleSheet
+                from reportlab.lib import colors
+                
+                pdf_path = os.path.join(self.output_dir, f"reporte_ampm_{timestamp}.pdf")
+                self._generate_pdf_report(pdf_path, report_data)
+                logger.info(f"Reportes generados: {pdf_path} y {excel_path}")
+            except ImportError:
+                logger.warning("ReportLab no disponible, generando solo Excel")
+                pdf_path = None
+                logger.info(f"Reporte generado: {excel_path}")
+            
+            return excel_path, pdf_path
             
         except Exception as e:
             logger.error(f"Error al generar reporte: {str(e)}")
-            return None
+            return None, None
     
     def _generate_pdf_report(self, file_path, report_data):
         """Genera un reporte en PDF"""
         try:
+            from reportlab.lib.pagesizes import letter
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.lib.styles import getSampleStyleSheet
+            from reportlab.lib import colors
+            
             doc = SimpleDocTemplate(file_path, pagesize=letter)
             styles = getSampleStyleSheet()
             story = []
