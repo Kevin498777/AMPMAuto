@@ -542,9 +542,24 @@ if PYQT5_AVAILABLE:
             # Área de logs
             self.log_text = QTextEdit()
             self.log_text.setReadOnly(True)
-            self.log_text.setMaximumHeight(250)
+            self.log_text.setMaximumHeight(350)
             self.log_text.setPlaceholderText("Los logs de ejecución aparecerán aquí...")
-            self.log_text.setFont(QFont("Consolas", 10))
+            self.log_text.setStyleSheet("""
+    QTextEdit {
+        background-color: #f8f9fa;           /* ← Gris muy claro casi blanco */
+        color: #212529;                      /* ← Texto oscuro para contraste */
+        border: 2px solid #ced4da;           /* ← Borde gris suave */
+        border-radius: 8px;
+        padding: 15px;
+        font-family: Consolas, monospace;
+        font-size: 14pt;                     /* ← Tamaño mantenido */
+        font-weight: 500;
+        line-height: 1.4;
+        selection-background-color: #007bff; /* ← Azul para texto seleccionado */
+        selection-color: white;
+    }
+""")
+            
             
             progress_layout.addWidget(self.status_label)
             progress_layout.addWidget(self.progress_bar)
