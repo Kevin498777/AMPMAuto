@@ -390,13 +390,15 @@ if PYQT5_AVAILABLE:
                 recovered_count = 0
                 results = []
                 
-                for index, guia_data in guias_df.iterrows():
+                # ✅ SOLUCIÓN: Usar enumerate() para obtener índice secuencial correcto
+                for current_index, (index, guia_data) in enumerate(guias_df.iterrows(), 1):
                     if not self.is_running:
                         break
                         
-                    progress = int((index + 1) / total_guias * 100)
+                    # ✅ CÁLCULO CORRECTO DEL PROGRESO
+                    progress = int((current_index) / total_guias * 100)
                     guia_number = str(guia_data.get('numero_guia', 'N/A')).strip()
-                    self.progress_updated.emit(progress, f"Procesando guía {index + 1} de {total_guias}")
+                    self.progress_updated.emit(progress, f"Procesando guía {current_index} de {total_guias}")
                     
                     try:
                         self.log_message.emit(f"📝 Procesando guía: {guia_number}")
@@ -420,7 +422,7 @@ if PYQT5_AVAILABLE:
                             else:
                                 error_count += 1
                                 self.log_message.emit(f"❌ ERROR: {guia_number} - {result.get('error', 'Error desconocido')}")
-                            
+                                
                     except Exception as e:
                         error_count += 1
                         error_msg = f"❌ Error crítico en guía {guia_number}: {str(e)}"
