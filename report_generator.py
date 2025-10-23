@@ -274,23 +274,27 @@ class ReportGenerator:
                     df_detailed = pd.DataFrame(detailed_data)
                     df_detailed.to_excel(writer, sheet_name='Detalle_Guías', index=False)
                 
-                # Hoja de estadísticas
-                stats_data = {
-                    'Estadística': [
-                        'Tiempo Total Estimado (segundos)',
-                        'Tiempo Promedio por Guía (segundos)',
-                        'Guías por Minuto',
-                        'Eficiencia del Proceso'
-                    ],
-                    'Valor': [
-                        sum(r.get('processing_time', 0) for r in report_data['results'] if r.get('processing_time')),
-                        self._calculate_avg_time(report_data['results']),
-                        self._calculate_guides_per_minute(report_data['results']),
-                        f"{(report_data['success'] / report_data['total'] * 100):.1f}%" if report_data['total'] > 0 else "0%"
-                    ]
-                }
-                df_stats = pd.DataFrame(stats_data)
-                df_stats.to_excel(writer, sheet_name='Estadísticas', index=False)
+                # ✅ NUEVA HOJA: GUÍAS CON ERROR (solo errores reales, no recuperables)
+                if report_data['results']:
+                    error_guides = []
+                    for result in report_data['results']:
+                        # Solo incluir guías que fallaron y NO son recuperables (errores reales)
+                        if not result['success'] and not result.get('recoverable', False):
+                            error_row = {
+                                'Guía': result.get('guia_number', 'N/A'),
+                                'Error': result.get('error', 'Error desconocido'),
+                                'Timestamp': result.get('timestamp', 'N/A'),
+                                'Tipo_Error': self._classify_error(result.get('error', ''))
+                            }
+                            error_guides.append(error_row)
+                    
+                    if error_guides:
+                        df_errors = pd.DataFrame(error_guides)
+                        df_errors.to_excel(writer, sheet_name='Guias_Error', index=False)
+                    else:
+                        # Crear hoja vacía si no hay errores
+                        df_errors = pd.DataFrame(columns=['Guía', 'Error', 'Timestamp', 'Tipo_Error'])
+                        df_errors.to_excel(writer, sheet_name='Guias_Error', index=False)
                 
                 # Obtener workbook para formateo
                 workbook = writer.book
@@ -310,13 +314,52 @@ class ReportGenerator:
                     worksheet.column_dimensions['D'].width = 40
                     worksheet.column_dimensions['E'].width = 20
                     worksheet.column_dimensions['F'].width = 12
+                
+                # Formatear hoja de guías con error
+                if 'Guias_Error' in workbook.sheetnames:
+                    worksheet = workbook['Guias_Error']
+                    worksheet.column_dimensions['A'].width = 15
+                    worksheet.column_dimensions['B'].width = 50
+                    worksheet.column_dimensions['C'].width = 20
+                    worksheet.column_dimensions['D'].width = 20
+                    
+                    # Aplicar formato condicional para resaltar errores
+                    from openpyxl.styles import PatternFill, Font
+                    red_fill = PatternFill(start_color="FFE6E6", end_color="FFE6E6", fill_type="solid")
+                    
+                    # Aplicar a todas las filas con datos
+                    for row in range(2, len(error_guides) + 2):  # +2 porque empieza en 1 y header en 1
+                        worksheet[f'A{row}'].fill = red_fill
+                        worksheet[f'B{row}'].fill = red_fill
+                        worksheet[f'C{row}'].fill = red_fill
+                        worksheet[f'D{row}'].fill = red_fill
             
             logger.info(f"✅ Reporte Excel generado: {file_path}")
+            logger.info(f"📊 Hojas incluidas: Resumen, Detalle_Guías, Guias_Error")
             return True
             
         except Exception as e:
             logger.error(f"❌ Error al generar Excel: {str(e)}")
             return False
+    
+    def _classify_error(self, error_message: str) -> str:
+        """Clasificar el tipo de error para mejor análisis"""
+        error_lower = error_message.lower()
+        
+        if any(word in error_lower for word in ['timeout', 'timed out', 'time out']):
+            return 'TIMEOUT'
+        elif any(word in error_lower for word in ['conexión', 'connection', 'network']):
+            return 'ERROR_CONEXION'
+        elif any(word in error_lower for word in ['elemento', 'element', 'not found', 'no encontrado']):
+            return 'ELEMENTO_NO_ENCONTRADO'
+        elif any(word in error_lower for word in ['navegador', 'browser', 'chrome']):
+            return 'ERROR_NAVEGADOR'
+        elif any(word in error_lower for word in ['login', 'credenciales', 'password']):
+            return 'ERROR_LOGIN'
+        elif any(word in error_lower for word in ['captcha', 'verificación']):
+            return 'CAPTCHA'
+        else:
+            return 'OTRO_ERROR'
     
     def _calculate_avg_time(self, results: List[Dict]) -> str:
         """Calcular tiempo promedio de procesamiento"""
