@@ -57,7 +57,7 @@ if PYQT5_AVAILABLE:
             self.excel_file_path = excel_file_path
         
         def read_excel(self):
-            """Leer archivo Excel y extraer guías - CON FILTRO MEJORADO"""
+            """Leer archivo Excel y extraer guías - CON SOPORTE PARA JSON"""
             try:
                 df = pd.read_excel(self.excel_file_path)
                 
@@ -85,7 +85,10 @@ if PYQT5_AVAILABLE:
                         df = df.rename(columns={first_col: 'numero_guia'})
                         logger.info(f"✅ Usando primera columna: '{first_col}' -> 'numero_guia'")
                 
-                # ✅ NUEVO: FILTRADO AGREGIVO DE NAN Y VACÍOS
+                # ✅ NUEVO: PROCESAR GUÍAS EN FORMATO JSON
+                df = self._process_json_guides(df)
+                
+                # ✅ FILTRADO NORMAL
                 df = self._clean_and_filter_data(df)
                 
                 logger.info(f"📊 Archivo contiene {len(df)} guías válidas después de limpieza")
@@ -100,12 +103,15 @@ if PYQT5_AVAILABLE:
                     
             except Exception as e:
                 logger.error(f"❌ Error leyendo Excel: {str(e)}")
-                return pd.DataFrame()
+                return pd.DataFrame()   
         
         def _clean_and_filter_data(self, df):
-            """Limpiar y filtrar datos - ELIMINA NAN, VACÍOS, .0 y FILTRA POR TIPO DE GUÍA"""
+            """Limpiar y filtrar datos - CON MEJORES LOGS"""
             try:
                 original_count = len(df)
+                
+                # Primero eliminar None values (de la extracción JSON)
+                df = df[df['numero_guia'].notna()]
                 
                 # Convertir a string y limpiar
                 df['numero_guia'] = df['numero_guia'].astype(str)
@@ -126,21 +132,75 @@ if PYQT5_AVAILABLE:
                 # Limpiar espacios
                 df['numero_guia'] = df['numero_guia'].str.strip()
                 
-                # ✅ NUEVO: FILTRADO POR TIPO DE GUÍA - SOLO MERCADO LIBRE
+                # ✅ FILTRADO POR TIPO DE GUÍA - SOLO MERCADO LIBRE
                 df = self._filter_by_shipping_type(df)
                 
                 # Log de limpieza
                 removed_count = original_count - len(df)
                 if removed_count > 0:
-                    logger.warning(f"⚠️ Se eliminaron {removed_count} guías inválidas/vacías/otras transportistas")
-                    logger.info(f"📊 Guías válidas de Mercado Libre para procesar: {len(df)}")
-                else:
-                    logger.info(f"📊 Todas las guías son válidas de Mercado Libre: {len(df)}")
+                    logger.info(f"📊 Limpieza completada: {removed_count} guías eliminadas, {len(df)} guías válidas restantes")
                 
                 return df
                     
             except Exception as e:
                 logger.error(f"❌ Error en limpieza de datos: {str(e)}")
+                return df
+
+        def _process_json_guides(self, df):
+            """Procesar guías en formato JSON y extraer el número de guía"""
+            try:
+                import json
+                import re
+                
+                original_count = len(df)
+                processed_count = 0
+                
+                # Función para extraer guía de diferentes formatos
+                def extract_guide_number(guide_value):
+                    if pd.isna(guide_value) or guide_value is None:
+                        return None
+                        
+                    guide_str = str(guide_value).strip()
+                    
+                    # Caso 1: Formato JSON como {"ID":"45706599155","t":"lm"}
+                    if guide_str.startswith('{') and guide_str.endswith('}'):
+                        try:
+                            json_data = json.loads(guide_str)
+                            if 'ID' in json_data:
+                                extracted_guide = str(json_data['ID']).strip()
+                                logger.info(f"✅ Extraída guía JSON: {guide_str} -> {extracted_guide}")
+                                return extracted_guide
+                        except json.JSONDecodeError:
+                            logger.warning(f"⚠️ No se pudo decodificar JSON: {guide_str}")
+                    
+                    # Caso 2: Buscar patrones de guía en texto
+                    # Patrón para guías de Mercado Libre (45 + 9 dígitos)
+                    mercado_libre_pattern = r'45\d{9}'
+                    matches = re.findall(mercado_libre_pattern, guide_str)
+                    if matches:
+                        logger.info(f"✅ Extraída guía de texto: {guide_str} -> {matches[0]}")
+                        return matches[0]
+                    
+                    # Caso 3: Si ya es un número de guía válido, mantenerlo
+                    if re.match(r'^45\d{9}$', guide_str):
+                        return guide_str
+                    
+                    # Si no coincide con ningún patrón, devolver None (será filtrado después)
+                    logger.warning(f"⚠️ Formato no reconocido: {guide_str}")
+                    return None
+                
+                # Aplicar la extracción a todas las guías
+                df['numero_guia'] = df['numero_guia'].apply(extract_guide_number)
+                
+                # Contar cuántas se procesaron exitosamente
+                processed_count = df['numero_guia'].notna().sum()
+                
+                logger.info(f"📊 Procesamiento JSON: {processed_count}/{original_count} guías extraídas exitosamente")
+                
+                return df
+                
+            except Exception as e:
+                logger.error(f"❌ Error procesando guías JSON: {str(e)}")
                 return df
 
         def _filter_by_shipping_type(self, df):
@@ -486,6 +546,8 @@ if PYQT5_AVAILABLE:
             title_font.setPointSize(18)
             title_font.setBold(True)
             title.setFont(title_font)
+            subtitle_font = QFont()
+            subtitle_font.setPointSize(16)
             
             # Subtítulo
             subtitle = QLabel("Carga automática de guías de envío en Grupo AMPM")
@@ -540,13 +602,15 @@ if PYQT5_AVAILABLE:
             self.log_text.setReadOnly(True)
             self.log_text.setMaximumHeight(250)
             self.log_text.setPlaceholderText("Los logs de ejecución aparecerán aquí...")
+            self.log_text.setFont(QFont("Consolas", 16))
+            
             
             progress_layout.addWidget(self.status_label)
             progress_layout.addWidget(self.progress_bar)
             progress_layout.addWidget(QLabel("Logs de ejecución:"))
             progress_layout.addWidget(self.log_text)
             
-            # Grupo de controles
+            # Grupo de controles - MODIFICADO
             controls_group = QGroupBox("3. Controles")
             controls_layout = QHBoxLayout(controls_group)
             
@@ -565,9 +629,16 @@ if PYQT5_AVAILABLE:
             self.generate_report_btn.setEnabled(False)
             self.generate_report_btn.setMinimumHeight(40)
             
+            # ✅ NUEVO BOTÓN: Abrir carpeta de reportes
+            self.open_reports_btn = QPushButton("📁 Abrir Carpeta de Reportes")
+            self.open_reports_btn.clicked.connect(self.open_reports_folder)
+            self.open_reports_btn.setMinimumHeight(40)
+            self.open_reports_btn.setEnabled(True)  # Siempre habilitado
+            
             controls_layout.addWidget(self.start_btn)
             controls_layout.addWidget(self.stop_btn)
             controls_layout.addWidget(self.generate_report_btn)
+            controls_layout.addWidget(self.open_reports_btn)  # ✅ Agregar nuevo botón
             
             # Agregar grupos al layout
             layout.addWidget(file_group)
@@ -598,7 +669,8 @@ if PYQT5_AVAILABLE:
             
             # Información del sistema
             info_label = QLabel(
-                f"AMPMAuto v1.0\n"
+                f"AMPMAuto v1.3.2\n"
+                f"Desarrollado por: Kevin Brian Ibarra Pineda ISIC\n"
                 f"Python: {sys.version.split()[0]}\n"
                 f"Directorio de trabajo: {os.getcwd()}\n\n"
                 f"Características:\n"
@@ -628,7 +700,7 @@ if PYQT5_AVAILABLE:
         
         def create_footer(self):
             """Crear el pie de página"""
-            footer = QLabel("© 2024 AMPMAuto - Sistema desarrollado para Grupo AMPM")
+            footer = QLabel("© 2024 AMPMAuto -  Desarrollado por Kevin Brian Ibarra Pineda ISIC")
             footer.setAlignment(Qt.AlignCenter)
             footer.setStyleSheet("color: #6c757d; padding: 10px; border-top: 1px solid #dee2e6; margin-top: 10px;")
             return footer
@@ -816,6 +888,8 @@ if PYQT5_AVAILABLE:
             self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
             self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
+            
+
         
         def stop_automation(self):
             """Detener el proceso de automatización"""
@@ -996,6 +1070,40 @@ if PYQT5_AVAILABLE:
                 print(f"🔍 [DEBUG] Traceback: {traceback.format_exc()}")
                 self.add_log_message(error_msg)
                 return None
+            
+        def open_reports_folder(self):
+            """Abrir la carpeta de reportes en el explorador de archivos"""
+            try:
+                from utils.logger import get_app_data_path
+                
+                # Obtener la ruta de reportes (la misma que usamos para generar reportes)
+                base_dir = get_app_data_path()
+                reports_dir = os.path.join(base_dir, "reports")
+                
+                # Crear la carpeta si no existe
+                os.makedirs(reports_dir, exist_ok=True)
+                
+                # Verificar si la carpeta existe
+                if not os.path.exists(reports_dir):
+                    QMessageBox.warning(self, "Advertencia", "La carpeta de reportes no existe.")
+                    return
+                
+                # Abrir la carpeta en el explorador de archivos
+                if os.name == 'nt':  # Windows
+                    os.startfile(reports_dir)
+                else:  # macOS y Linux
+                    import subprocess
+                    if sys.platform == "darwin":
+                        subprocess.run(["open", reports_dir])
+                    else:
+                        subprocess.run(["xdg-open", reports_dir])
+                
+                self.add_log_message(f"📁 Carpeta de reportes abierta: {reports_dir}")
+                
+            except Exception as e:
+                error_msg = f"❌ Error al abrir carpeta de reportes: {str(e)}"
+                self.add_log_message(error_msg)
+                QMessageBox.critical(self, "Error", error_msg)
 
 def main():
     """Función principal de la aplicación"""
@@ -1020,6 +1128,7 @@ def main():
         app.setApplicationName("AMPMAuto")
         app.setApplicationVersion("1.0")
         app.setApplicationDisplayName("AMPMAuto - Automatización de Guías")
+        app.setFont(QFont("Segoe UI", 14))
         
         # Crear y mostrar ventana principal
         window = MainWindow()

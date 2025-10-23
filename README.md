@@ -1,4 +1,18 @@
-# Mi nuevo proyecto
+# AMPMAuto
+
+Sistema de automatización para Grupo AMPM
+
+## Desarrollado por
+**Kevin Brian Ibarra Pineda**  
+**ISIC**
+
+## Características
+- Automatización de guías de envío
+- Interfaz gráfica intuitiva
+- Reportes detallados
+- Manejo robusto de errores
+
+
 # **📚 TUTORIAL COMPLETO Y DOCUMENTACIÓN PARA AMPMAuto**
 
 ## **🎯 TUTORIAL GUIADO PASO A PASO**

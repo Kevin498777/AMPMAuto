@@ -72,7 +72,7 @@ class AMPMAutomatorRobusto:
             logger.warning(f"⚠️ Error verificando loading: {e}")
     
     def check_and_close_modals(self):
-        """Verificar y cerrar modales específicos de AMPM - MEJORADO"""
+        """Verificar y cerrar modales específicos de AMPM - MEJORADO CON DETECCIÓN DE GUÍA NO ASIGNADA"""
         try:
             # Patrones de mensajes que indican guía ya entregada o problemas
             modal_patterns = [
@@ -82,7 +82,10 @@ class AMPMAutomatorRobusto:
                 "guía entregada",
                 "no es válida",
                 "error",
-                "inválida"
+                "inválida",
+                "no ha sido asignada a ninguno de los convenios",  # NUEVO PATRÓN
+                "no ha sido asignada",  # PATRÓN ALTERNATIVO
+                "convenios que administra esta cuenta"  # PATRÓN PARCIAL
             ]
             
             # Buscar modales visibles
@@ -91,7 +94,8 @@ class AMPMAutomatorRobusto:
                 "//div[@role='dialog' and contains(@style, 'display: block')]",
                 "//div[contains(@class, 'ui-dialog')]//*[contains(text(), 'guía')]",
                 "//div[@id='errorTPAK']",
-                "//div[contains(@class, 'ui-dialog-title') and contains(text(), 'TPAK')]"
+                "//div[contains(@class, 'ui-dialog-title') and contains(text(), 'TPAK')]",
+                "//div[contains(@class, 'ui-dialog-content')]//p[contains(text(), 'guía')]"  # NUEVO SELECTOR
             ]
             
             for selector in modal_selectors:
@@ -106,7 +110,14 @@ class AMPMAutomatorRobusto:
                             # Verificar si es el modal de "guía ya entregada"
                             for pattern in modal_patterns:
                                 if pattern.lower() in modal_text.lower():
-                                    logger.warning(f"⚠️ Modal de guía ya entregada detectado: {pattern}")
+                                    logger.warning(f"⚠️ Modal detectado: {pattern}")
+                                    
+                                    # ESPECIAL: Si es "guía no asignada", retornar tipo específico
+                                    if "no ha sido asignada" in modal_text.lower() or "convenios que administra" in modal_text.lower():
+                                        logger.error("❌ GUÍA NO ASIGNADA AL CONVENIO DETECTADA")
+                                        self.close_modal_safely(modal, "guía no asignada")
+                                        return "guia_no_asignada"
+                                    
                                     return self.close_modal_safely(modal, "guía ya entregada")
                             
                             # Cerrar cualquier modal visible
@@ -114,6 +125,15 @@ class AMPMAutomatorRobusto:
                 except:
                     continue
             
+            # NUEVA VERIFICACIÓN: Buscar en todo el HTML el mensaje específico
+            try:
+                page_source = self.driver.page_source
+                if "no ha sido asignada a ninguno de los convenios" in page_source:
+                    logger.error("❌ MENSAJE 'GUÍA NO ASIGNADA' DETECTADO EN HTML")
+                    return "guia_no_asignada"
+            except:
+                pass
+                
             return False
             
         except Exception as e:
@@ -388,7 +408,17 @@ class AMPMAutomatorRobusto:
             guia_field = self.wait.until(EC.presence_of_element_located((By.ID, "GuiaId")))
             
             # Verificar modales antes de ingresar la guía
-            self.check_and_close_modals()
+            modal_result = self.check_and_close_modals()
+            
+            # NUEVO: Manejar específicamente el caso de "guía no asignada"
+            if modal_result == "guia_no_asignada":
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía no está asignada al convenio",
+                    'recoverable': False,  # No es recuperable
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
             
             # Ingresar guía
             if not self.safe_clear_and_send_keys(guia_field, guia_final):
@@ -406,8 +436,16 @@ class AMPMAutomatorRobusto:
             check_timeout()
             time.sleep(4)  # Esperar a que carguen los detalles
             
-            # Verificar si apareció el modal de "guía ya entregada"
-            if self.check_and_close_modals():
+            # Verificar si apareció el modal de "guía ya entregada" o "no asignada"
+            modal_result = self.check_and_close_modals()
+            if modal_result == "guia_no_asignada":
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía no está asignada al convenio",
+                    'recoverable': False
+                }
+            elif modal_result:
                 return {
                     'success': False,
                     'guia_number': guia_final,
@@ -417,61 +455,20 @@ class AMPMAutomatorRobusto:
             
             check_timeout()
             
-            # Verificar otros errores
-            error_message = self.handle_errors()
-            if error_message:
+            # NUEVA VERIFICACIÓN: Buscar mensaje en el HTML completo
+            page_source = self.driver.page_source
+            if "no ha sido asignada a ninguno de los convenios" in page_source:
+                logger.error(f"❌ Guía {guia_final} no asignada al convenio (detectado en HTML)")
+                self.check_and_close_modals()  # Cerrar modal si existe
                 return {
                     'success': False,
                     'guia_number': guia_final,
-                    'error': f"Error en guía: {error_message}",
-                    'recoverable': "entregada" in error_message.lower()
+                    'error': "La guía no está asignada al convenio",
+                    'recoverable': False,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
                 }
             
-            check_timeout()
-            
-            # ✅ ESPERAR A QUE DESAPAREZCA EL LOADING ANTES DE HACER CLICK
-            self._wait_for_loading_to_disappear()
-            
-            # Buscar botón Entregar
-            entregar_button = self.wait.until(
-                EC.element_to_be_clickable((By.ID, "btnEntregar"))
-            )
-            
-            if not self.safe_click(entregar_button, "botón Entregar"):
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': "No se pudo hacer click en el botón Entregar"
-                }
-            
-            logger.info(f"✅ Botón Entregar presionado para guía {guia_final}")
-            
-            check_timeout()
-            
-            # ✅ ESPERAR PROCESAMIENTO Y VERIFICAR LOADING
-            self._wait_for_loading_to_disappear()
-            time.sleep(2)  # Espera adicional
-            
-            # Verificar modales después de entregar
-            if self.check_and_close_modals():
-                return {
-                    'success': False, 
-                    'guia_number': guia_final,
-                    'error': "Error al entregar - modal detectado",
-                    'recoverable': True
-                }
-            
-            # Verificar errores después de entregar
-            error_message = self.handle_errors()
-            if error_message:
-                recoverable = any(pattern in error_message.lower() for pattern in 
-                                ['entregada', 'duplicada', 'repetida'])
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': f"Error al entregar: {error_message}",
-                    'recoverable': recoverable
-                }
+           
             
             logger.info(f"✅ Guía {guia_final} procesada exitosamente")
             
