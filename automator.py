@@ -1,4 +1,4 @@
-# automator.py - VERSIÓN MEJORADA CON MANEJO DE NAN Y LOADING
+# automator.py - VERSIÓN CORREGIDA CON DETECCIÓN MEJORADA DE GUÍAS ENTREGADAS
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
@@ -59,7 +59,7 @@ class AMPMAutomatorRobusto:
             raise
     
     def _wait_for_loading_to_disappear(self, timeout=10):
-        """Esperar a que desaparezca el elemento de loading - NUEVA FUNCIÓN"""
+        """Esperar a que desaparezca el elemento de loading"""
         try:
             logger.info("⏳ Esperando a que desaparezca el loading...")
             WebDriverWait(self.driver, timeout).until(
@@ -72,69 +72,90 @@ class AMPMAutomatorRobusto:
             logger.warning(f"⚠️ Error verificando loading: {e}")
     
     def check_and_close_modals(self):
-        """Verificar y cerrar modales específicos de AMPM - MEJORADO CON DETECCIÓN DE GUÍA NO ASIGNADA"""
+        """Verificar y cerrar modales específicos de AMPM - VERSIÓN MEJORADA"""
         try:
-            # Patrones de mensajes que indican guía ya entregada o problemas
+            # PATRONES MÁS COMPLETOS para guías ya entregadas
             modal_patterns = [
                 "La guía ya se encuentra entregada",
                 "guía ya se encuentra entregada", 
                 "ya se encuentra entregada",
                 "guía entregada",
+                "la guía ya fue entregada",
+                "guía ya fue entregada", 
+                "ya fue entregada",
                 "no es válida",
                 "error",
                 "inválida",
-                "no ha sido asignada a ninguno de los convenios",  # NUEVO PATRÓN
-                "no ha sido asignada",  # PATRÓN ALTERNATIVO
-                "convenios que administra esta cuenta"  # PATRÓN PARCIAL
+                "no ha sido asignada a ninguno de los convenios",
+                "no ha sido asignada",
+                "convenios que administra esta cuenta"
             ]
             
-            # Buscar modales visibles
+            # MÁS SELECTORES para capturar todos los modales posibles
             modal_selectors = [
                 "//div[contains(@class, 'ui-dialog') and contains(@style, 'display: block')]",
                 "//div[@role='dialog' and contains(@style, 'display: block')]",
                 "//div[contains(@class, 'ui-dialog')]//*[contains(text(), 'guía')]",
                 "//div[@id='errorTPAK']",
                 "//div[contains(@class, 'ui-dialog-title') and contains(text(), 'TPAK')]",
-                "//div[contains(@class, 'ui-dialog-content')]//p[contains(text(), 'guía')]"  # NUEVO SELECTOR
+                "//div[contains(@class, 'ui-dialog-content')]//p[contains(text(), 'guía')]",
+                "//div[contains(@class, 'modal')]",
+                "//div[contains(@class, 'popup')]",
+                "//div[contains(@style, 'display: block')]//*[contains(text(), 'guía')]"
             ]
+            
+            modal_detected = False
+            modal_text_content = ""
             
             for selector in modal_selectors:
                 try:
                     modals = self.driver.find_elements(By.XPATH, selector)
                     for modal in modals:
                         if modal.is_displayed():
-                            # Obtener el texto del modal para diagnóstico
                             modal_text = modal.text
                             logger.info(f"🔍 Modal detectado: {modal_text[:100]}...")
+                            modal_text_content = modal_text
                             
-                            # Verificar si es el modal de "guía ya entregada"
+                            # VERIFICACIÓN MÁS ESTRICTA de guía ya entregada
                             for pattern in modal_patterns:
                                 if pattern.lower() in modal_text.lower():
-                                    logger.warning(f"⚠️ Modal detectado: {pattern}")
+                                    logger.warning(f"⚠️ Modal de '{pattern}' detectado")
                                     
-                                    # ESPECIAL: Si es "guía no asignada", retornar tipo específico
-                                    if "no ha sido asignada" in modal_text.lower() or "convenios que administra" in modal_text.lower():
+                                    # GUÍA NO ASIGNADA
+                                    if any(p in modal_text.lower() for p in ["no ha sido asignada", "convenios que administra"]):
                                         logger.error("❌ GUÍA NO ASIGNADA AL CONVENIO DETECTADA")
                                         self.close_modal_safely(modal, "guía no asignada")
                                         return "guia_no_asignada"
                                     
-                                    return self.close_modal_safely(modal, "guía ya entregada")
+                                    # GUÍA YA ENTREGADA
+                                    if any(p in modal_text.lower() for p in ["entregada", "ya se encuentra", "ya fue"]):
+                                        logger.error("❌ GUÍA YA ENTREGADA DETECTADA")
+                                        self.close_modal_safely(modal, "guía ya entregada")
+                                        return "guia_ya_entregada"
+                                    
+                                    # OTRO ERROR
+                                    self.close_modal_safely(modal, "error genérico")
+                                    return True
                             
                             # Cerrar cualquier modal visible
-                            return self.close_modal_safely(modal, "modal genérico")
-                except:
+                            self.close_modal_safely(modal, "modal genérico")
+                            modal_detected = True
+                except Exception as e:
                     continue
             
-            # NUEVA VERIFICACIÓN: Buscar en todo el HTML el mensaje específico
+            # BÚSQUEDA EN HTML COMPLETO como respaldo
             try:
-                page_source = self.driver.page_source
+                page_source = self.driver.page_source.lower()
                 if "no ha sido asignada a ninguno de los convenios" in page_source:
                     logger.error("❌ MENSAJE 'GUÍA NO ASIGNADA' DETECTADO EN HTML")
                     return "guia_no_asignada"
+                elif "ya se encuentra entregada" in page_source:
+                    logger.error("❌ MENSAJE 'GUÍA YA ENTREGADA' DETECTADO EN HTML")
+                    return "guia_ya_entregada"
             except:
                 pass
                 
-            return False
+            return modal_detected
             
         except Exception as e:
             logger.warning(f"⚠️ Error al verificar modales: {str(e)}")
@@ -145,52 +166,59 @@ class AMPMAutomatorRobusto:
         try:
             logger.info(f"🔄 Cerrando modal de {modal_type}...")
             
-            # Estrategia 1: Buscar botón "Ok" en el modal
-            ok_buttons = self.driver.find_elements(By.XPATH, 
-                "//button[contains(@class, 'ui-button') and (contains(text(), 'Ok') or contains(text(), 'OK') or contains(text(), 'Aceptar'))]")
+            # MÚLTIPLES ESTRATEGIAS de cierre
+            close_strategies = [
+                # Botones Ok/Aceptar
+                lambda: self._click_element_by_xpath(
+                    "//button[contains(@class, 'ui-button') and (contains(text(), 'Ok') or contains(text(), 'OK') or contains(text(), 'Aceptar'))]"
+                ),
+                # Botones Cerrar (X)
+                lambda: self._click_element_by_xpath(
+                    "//button[contains(@class, 'ui-dialog-titlebar-close')] | "
+                    "//span[contains(@class, 'ui-icon-closethick')] | "
+                    "//button[@aria-label='close']"
+                ),
+                # Presionar ESC
+                lambda: ActionChains(self.driver).send_keys(Keys.ESCAPE).perform(),
+                # Click fuera del modal
+                lambda: self._click_element_by_class("ui-widget-overlay")
+            ]
             
-            for button in ok_buttons:
-                if button.is_displayed():
-                    self.driver.execute_script("arguments[0].click();", button)
-                    logger.info("✅ Modal cerrado con botón Ok")
-                    time.sleep(1)
-                    return True
-            
-            # Estrategia 2: Buscar botón de cerrar (X)
-            close_buttons = self.driver.find_elements(By.XPATH,
-                "//button[contains(@class, 'ui-dialog-titlebar-close')] | "
-                "//span[contains(@class, 'ui-icon-closethick')] | "
-                "//button[@aria-label='close']")
-            
-            for button in close_buttons:
-                if button.is_displayed():
-                    self.driver.execute_script("arguments[0].click();", button)
-                    logger.info("✅ Modal cerrado con botón X")
-                    time.sleep(1)
-                    return True
-            
-            # Estrategia 3: Presionar ESC
-            actions = ActionChains(self.driver)
-            actions.send_keys(Keys.ESCAPE).perform()
-            logger.info("✅ Intentando cerrar modal con ESC")
-            time.sleep(1)
-            
-            # Estrategia 4: Click fuera del modal
-            try:
-                overlay = self.driver.find_element(By.CLASS_NAME, "ui-widget-overlay")
-                if overlay.is_displayed():
-                    self.driver.execute_script("arguments[0].click();", overlay)
-                    logger.info("✅ Modal cerrado clickeando fuera")
-                    time.sleep(1)
-            except:
-                pass
+            for strategy in close_strategies:
+                try:
+                    if strategy():
+                        logger.info(f"✅ Modal cerrado con estrategia {close_strategies.index(strategy) + 1}")
+                        time.sleep(1)
+                        return True
+                except:
+                    continue
                 
-            return True
+            return False
             
         except Exception as e:
             logger.error(f"❌ Error al cerrar modal: {str(e)}")
             return False
     
+    def _click_element_by_xpath(self, xpath):
+        """Helper para clickear elementos por XPATH"""
+        elements = self.driver.find_elements(By.XPATH, xpath)
+        for element in elements:
+            if element.is_displayed():
+                self.driver.execute_script("arguments[0].click();", element)
+                return True
+        return False
+    
+    def _click_element_by_class(self, class_name):
+        """Helper para clickear elementos por clase"""
+        try:
+            element = self.driver.find_element(By.CLASS_NAME, class_name)
+            if element.is_displayed():
+                self.driver.execute_script("arguments[0].click();", element)
+                return True
+        except:
+            pass
+        return False
+
     def safe_clear_and_send_keys(self, element, text):
         """Método seguro para limpiar y enviar texto a un elemento"""
         try:
@@ -220,7 +248,8 @@ class AMPMAutomatorRobusto:
         """Click seguro que verifica modales primero"""
         try:
             # Verificar modales antes de hacer click
-            if self.check_and_close_modals():
+            modal_result = self.check_and_close_modals()
+            if modal_result:
                 logger.info("🔄 Modal cerrado antes del click")
                 time.sleep(1)
             
@@ -250,7 +279,12 @@ class AMPMAutomatorRobusto:
         """Manejar errores de validación en la página - MEJORADO"""
         try:
             # Primero verificar modales
-            if self.check_and_close_modals():
+            modal_result = self.check_and_close_modals()
+            if modal_result == "guia_no_asignada":
+                return "La guía no está asignada al convenio"
+            elif modal_result == "guia_ya_entregada":
+                return "La guía ya se encuentra entregada"
+            elif modal_result:
                 return "Modal de error detectado y cerrado"
             
             # Verificar errores de campo específicos
@@ -358,13 +392,13 @@ class AMPMAutomatorRobusto:
             return False
 
     def _process_single_shipment_with_timeout(self, guia_data):
-        """Procesa una guía individual con manejo de modales - VERSIÓN MEJORADA"""
+        """Procesa una guía individual con manejo de modales - VERSIÓN COMPLETAMENTE CORREGIDA"""
         import time
         start_time = time.time()
         
         guia_number = guia_data.get('numero_guia', 'N/A')
         
-        # ✅ MEJOR VALIDACIÓN DE GUÍAS VACÍAS O INVÁLIDAS
+        # ✅ VALIDACIÓN DE GUÍAS VACÍAS O INVÁLIDAS
         guia_str = str(guia_number).strip() if guia_number is not None else ''
         
         if (not guia_str or 
@@ -410,13 +444,21 @@ class AMPMAutomatorRobusto:
             # Verificar modales antes de ingresar la guía
             modal_result = self.check_and_close_modals()
             
-            # NUEVO: Manejar específicamente el caso de "guía no asignada"
+            # Manejar casos específicos de modales
             if modal_result == "guia_no_asignada":
                 return {
                     'success': False,
                     'guia_number': guia_final,
                     'error': "La guía no está asignada al convenio",
-                    'recoverable': False,  # No es recuperable
+                    'recoverable': False,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
+            elif modal_result == "guia_ya_entregada":
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía ya se encuentra entregada",
+                    'recoverable': True,
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
                 }
             
@@ -436,7 +478,7 @@ class AMPMAutomatorRobusto:
             check_timeout()
             time.sleep(4)  # Esperar a que carguen los detalles
             
-            # Verificar si apareció el modal de "guía ya entregada" o "no asignada"
+            # VERIFICACIÓN DESPUÉS DE INGRESAR GUÍA
             modal_result = self.check_and_close_modals()
             if modal_result == "guia_no_asignada":
                 return {
@@ -445,7 +487,7 @@ class AMPMAutomatorRobusto:
                     'error': "La guía no está asignada al convenio",
                     'recoverable': False
                 }
-            elif modal_result:
+            elif modal_result == "guia_ya_entregada":
                 return {
                     'success': False,
                     'guia_number': guia_final,
@@ -455,11 +497,11 @@ class AMPMAutomatorRobusto:
             
             check_timeout()
             
-            # NUEVA VERIFICACIÓN: Buscar mensaje en el HTML completo
+            # ✅ VERIFICACIÓN EN HTML COMPLETO
             page_source = self.driver.page_source
-            if "no ha sido asignada a ninguno de los convenios" in page_source:
+            if "no ha sido asignada a ninguno de los convenios" in page_source.lower():
                 logger.error(f"❌ Guía {guia_final} no asignada al convenio (detectado en HTML)")
-                self.check_and_close_modals()  # Cerrar modal si existe
+                self.check_and_close_modals()
                 return {
                     'success': False,
                     'guia_number': guia_final,
@@ -467,8 +509,101 @@ class AMPMAutomatorRobusto:
                     'recoverable': False,
                     'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
                 }
+            elif "ya se encuentra entregada" in page_source.lower():
+                logger.error(f"❌ Guía {guia_final} ya entregada (detectado en HTML)")
+                self.check_and_close_modals()
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía ya se encuentra entregada",
+                    'recoverable': True,
+                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+                }
             
-           
+            # ✅ ESPERAR A QUE DESAPAREZCA EL LOADING ANTES DE HACER CLICK - DESCOMENTADO
+            self._wait_for_loading_to_disappear()
+
+            # ✅ BUSCAR Y HACER CLIC EN BOTÓN ENTREGAR - DESCOMENTADO Y MEJORADO
+            try:
+                entregar_button = self.wait.until(
+                    EC.element_to_be_clickable((By.ID, "btnEntregar"))
+                )
+                
+                if not self.safe_click(entregar_button, "botón Entregar"):
+                    return {
+                        'success': False,
+                        'guia_number': guia_final,
+                        'error': "No se pudo hacer click en el botón Entregar"
+                    }
+
+                logger.info(f"✅ Botón Entregar presionado para guía {guia_final}")
+            except Exception as e:
+                logger.error(f"❌ No se pudo encontrar el botón Entregar: {str(e)}")
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': f"No se pudo encontrar el botón Entregar: {str(e)}",
+                    'recoverable': False
+                }
+            
+            check_timeout()
+            
+            # ✅ ESPERAR PROCESAMIENTO Y VERIFICAR LOADING
+            self._wait_for_loading_to_disappear()
+            time.sleep(3)  # Espera adicional después de entregar
+            
+            # ✅ VERIFICACIÓN EXHAUSTIVA DESPUÉS DE ENTREGAR
+            modal_result = self.check_and_close_modals()
+            if modal_result == "guia_no_asignada":
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía no está asignada al convenio",
+                    'recoverable': False
+                }
+            elif modal_result == "guia_ya_entregada":
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía ya se encuentra entregada",
+                    'recoverable': True
+                }
+            elif modal_result:
+                return {
+                    'success': False, 
+                    'guia_number': guia_final,
+                    'error': "Error al entregar - modal detectado",
+                    'recoverable': True
+                }
+            
+            # ✅ VERIFICACIÓN FINAL EN HTML
+            page_source = self.driver.page_source.lower()
+            if "no ha sido asignada" in page_source:
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía no está asignada al convenio",
+                    'recoverable': False
+                }
+            elif "ya se encuentra entregada" in page_source:
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': "La guía ya se encuentra entregada", 
+                    'recoverable': True
+                }
+            
+            # ✅ VERIFICAR ERRORES DE VALIDACIÓN
+            error_message = self.handle_errors()
+            if error_message:
+                recoverable = any(pattern in error_message.lower() for pattern in 
+                                ['entregada', 'duplicada', 'repetida'])
+                return {
+                    'success': False,
+                    'guia_number': guia_final,
+                    'error': f"Error al entregar: {error_message}",
+                    'recoverable': recoverable
+                }
             
             logger.info(f"✅ Guía {guia_final} procesada exitosamente")
             
@@ -498,7 +633,13 @@ class AMPMAutomatorRobusto:
             logger.error(f"❌ Error en procesamiento de guía {guia_final}: {str(e)}")
             # Intentar recuperar el estado
             self.check_and_close_modals()
-            raise
+            return {
+                'success': False,
+                'guia_number': guia_final,
+                'error': f"Error en procesamiento: {str(e)}",
+                'recoverable': False,
+                'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
+            }
     
     def process_shipment_with_retry(self, guia_data):
         """Procesar guía con reintentos inteligentes"""
@@ -508,10 +649,14 @@ class AMPMAutomatorRobusto:
                 
                 result = self._process_single_shipment_with_timeout(guia_data)
                 
+                # ✅ NO REINTENTAR GUÍAS YA ENTREGADAS O NO ASIGNADAS
                 if result['success']:
                     return result
                 elif result.get('recoverable', False):
                     logger.info("🔄 Error recuperable, continuando con siguiente guía")
+                    return result
+                elif "no está asignada" in result.get('error', ''):
+                    logger.info("🚫 Guía no asignada, no se reintenta")
                     return result
                 elif attempt < self.max_retries:
                     wait_time = (attempt + 1) * 2
@@ -542,15 +687,3 @@ class AMPMAutomatorRobusto:
                 logger.info("🔒 Navegador cerrado")
             except:
                 pass
-
-# COMENTADO: Función de prueba removida para distribución
-"""
-# FUNCIÓN DE PRUEBA ESPECÍFICA PARA MODALES
-def test_ampm_modal_fix():
-    # ... código de prueba comentado ...
-    pass
-
-if __name__ == "__main__":
-    # Ejecutar prueba específica para modales
-    test_ampm_modal_fix()
-"""

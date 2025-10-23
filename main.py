@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime
 import logging
 import traceback
+import json
+import re
 
 # Importar PyQt5 PRIMERO, antes de cualquier otro código
 try:
@@ -22,20 +24,26 @@ except ImportError as e:
 
 # Solo importar nuestros módulos si PyQt5 está disponible
 if PYQT5_AVAILABLE:
-    # Importar módulos personalizados
+    # Importar módulos personalizados con manejo robusto de errores
     try:
         from automator import AMPMAutomatorRobusto as AMPMAutomator
-    except ImportError:
+        AUTOMATOR_AVAILABLE = True
+    except ImportError as e:
+        print(f"Advertencia: No se pudo importar AMPMAutomatorRobusto: {e}")
         try:
-            from automator import AMPMAutomatorRobusto as AMPMAutomator
-        except ImportError:
             from automator import AMPMAutomator
+            AUTOMATOR_AVAILABLE = True
+        except ImportError as e:
+            print(f"Error: No se pudo importar ningún automator: {e}")
+            AUTOMATOR_AVAILABLE = False
 
-    # Importar utils
+    # Importar utils con manejo de errores
     try:
         from utils.config import ConfigManager
         from utils.logger import setup_logger
-    except ImportError:
+        UTILS_AVAILABLE = True
+    except ImportError as e:
+        print(f"Advertencia: No se pudieron importar utils: {e}")
         # Crear clases básicas si no existen los módulos
         class ConfigManager:
             def __init__(self):
@@ -44,11 +52,22 @@ if PYQT5_AVAILABLE:
                 self.timeout = 30
         
         def setup_logger():
-            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+            logging.basicConfig(level=logging.INFO, 
+                              format='%(asctime)s - %(levelname)s - %(message)s')
             return logging.getLogger(__name__)
+        UTILS_AVAILABLE = False
+
+    # Importar el ReportGenerator mejorado
+    try:
+        from report_generator import ReportGenerator, generate_detailed_report
+        REPORT_GENERATOR_AVAILABLE = True
+        print("✅ ReportGenerator disponible")
+    except ImportError as e:
+        print(f"Advertencia: No se pudo importar ReportGenerator: {e}")
+        REPORT_GENERATOR_AVAILABLE = False
 
     # Configurar logging
-    logger = setup_logger()
+    logger = setup_logger() if UTILS_AVAILABLE else logging.getLogger(__name__)
 
     class DataHandler:
         """Manejador de datos para archivos Excel - VERSIÓN MEJORADA"""
@@ -59,7 +78,19 @@ if PYQT5_AVAILABLE:
         def read_excel(self):
             """Leer archivo Excel y extraer guías - CON SOPORTE PARA JSON"""
             try:
+                # Verificar que el archivo existe
+                if not os.path.exists(self.excel_file_path):
+                    logger.error(f"❌ El archivo no existe: {self.excel_file_path}")
+                    return pd.DataFrame()
+                
+                # Leer archivo Excel
                 df = pd.read_excel(self.excel_file_path)
+                logger.info(f"📊 Archivo Excel leído: {len(df)} filas encontradas")
+                
+                # Verificar que tenga datos
+                if df.empty:
+                    logger.warning("⚠️ El archivo Excel está vacío")
+                    return df
                 
                 # Verificar que tenga la columna necesaria
                 if 'numero_guia' not in df.columns:
@@ -71,7 +102,8 @@ if PYQT5_AVAILABLE:
                         'tracking': 'numero_guia',
                         'número': 'numero_guia',
                         'guia_number': 'numero_guia',
-                        'guia_id': 'numero_guia'
+                        'guia_id': 'numero_guia',
+                        'tracking_number': 'numero_guia'
                     }
                     
                     for old_col, new_col in column_mapping.items():
@@ -85,7 +117,7 @@ if PYQT5_AVAILABLE:
                         df = df.rename(columns={first_col: 'numero_guia'})
                         logger.info(f"✅ Usando primera columna: '{first_col}' -> 'numero_guia'")
                 
-                # ✅ NUEVO: PROCESAR GUÍAS EN FORMATO JSON
+                # ✅ PROCESAR GUÍAS EN FORMATO JSON
                 df = self._process_json_guides(df)
                 
                 # ✅ FILTRADO NORMAL
@@ -103,11 +135,15 @@ if PYQT5_AVAILABLE:
                     
             except Exception as e:
                 logger.error(f"❌ Error leyendo Excel: {str(e)}")
+                logger.error(traceback.format_exc())
                 return pd.DataFrame()   
         
         def _clean_and_filter_data(self, df):
             """Limpiar y filtrar datos - CON MEJORES LOGS"""
             try:
+                if df.empty:
+                    return df
+                    
                 original_count = len(df)
                 
                 # Primero eliminar None values (de la extracción JSON)
@@ -149,9 +185,9 @@ if PYQT5_AVAILABLE:
         def _process_json_guides(self, df):
             """Procesar guías en formato JSON y extraer el número de guía"""
             try:
-                import json
-                import re
-                
+                if df.empty:
+                    return df
+                    
                 original_count = len(df)
                 processed_count = 0
                 
@@ -185,9 +221,8 @@ if PYQT5_AVAILABLE:
                     if re.match(r'^45\d{9}$', guide_str):
                         return guide_str
                     
-                    # Si no coincide con ningún patrón, devolver None (será filtrado después)
-                    logger.warning(f"⚠️ Formato no reconocido: {guide_str}")
-                    return None
+                    # Si no coincide con ningún patrón, devolver el valor original
+                    return guide_str
                 
                 # Aplicar la extracción a todas las guías
                 df['numero_guia'] = df['numero_guia'].apply(extract_guide_number)
@@ -195,7 +230,7 @@ if PYQT5_AVAILABLE:
                 # Contar cuántas se procesaron exitosamente
                 processed_count = df['numero_guia'].notna().sum()
                 
-                logger.info(f"📊 Procesamiento JSON: {processed_count}/{original_count} guías extraídas exitosamente")
+                logger.info(f"📊 Procesamiento JSON: {processed_count}/{original_count} guías procesadas")
                 
                 return df
                 
@@ -206,30 +241,24 @@ if PYQT5_AVAILABLE:
         def _filter_by_shipping_type(self, df):
             """Filtrar guías por tipo de transportista - SOLO MERCADO LIBRE"""
             try:
+                if df.empty:
+                    return df
+                    
                 original_count = len(df)
                 
                 # Patrones para identificar tipos de guías
                 mercado_libre_pattern = r'^45\d{9}$'  # Guías Mercado Libre: empiezan con 45, 11 dígitos
-                shein_pattern = r'^\d{10,12}$'        # Guías Shein: 10-12 dígitos (pero no empiezan con 45)
-                ampm_pattern = r'^AMPM'               # Guías AMPM: empiezan con AMPM
                 
                 # Clasificar guías
                 mercado_libre_guias = df['numero_guia'].str.match(mercado_libre_pattern, na=False)
-                shein_guias = ~mercado_libre_guias & df['numero_guia'].str.match(shein_pattern, na=False)
-                ampm_guias = df['numero_guia'].str.match(ampm_pattern, na=False)
-                otras_guias = ~(mercado_libre_guias | shein_guias | ampm_guias)
                 
                 # Contar por tipo
                 count_mercado_libre = mercado_libre_guias.sum()
-                count_shein = shein_guias.sum()
-                count_ampm = ampm_guias.sum()
-                count_otras = otras_guias.sum()
+                count_otras = (~mercado_libre_guias).sum()
                 
                 # Log informativo
                 logger.info("📋 CLASIFICACIÓN DE GUÍAS DETECTADA:")
                 logger.info(f"   🟢 Mercado Libre: {count_mercado_libre} guías (45 + 9 dígitos)")
-                logger.info(f"   🔵 Shein: {count_shein} guías (10-12 dígitos)")
-                logger.info(f"   🟡 AMPM: {count_ampm} guías (prefijo AMPM)")
                 logger.info(f"   ⚫ Otras: {count_otras} guías (otros formatos)")
                 
                 # Mostrar ejemplos de cada tipo
@@ -237,14 +266,10 @@ if PYQT5_AVAILABLE:
                     ejemplos = df[mercado_libre_guias]['numero_guia'].head(3).tolist()
                     logger.info(f"   📝 Ejemplos Mercado Libre: {', '.join(ejemplos)}")
                 
-                if count_shein > 0:
-                    ejemplos = df[shein_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos Shein: {', '.join(ejemplos)}")
-                    logger.warning("   ⚠️  Las guías Shein requieren nombre del receptor - NO PROCESABLES")
-                
-                if count_ampm > 0:
-                    ejemplos = df[ampm_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos AMPM: {', '.join(ejemplos)}")
+                if count_otras > 0:
+                    ejemplos = df[~mercado_libre_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos Otras: {', '.join(ejemplos)}")
+                    logger.warning("   ⚠️  Las guías que no son de Mercado Libre no se procesarán")
                 
                 # ✅ FILTRO CRÍTICO: Mantener SOLO guías de Mercado Libre
                 df_filtrado = df[mercado_libre_guias].copy()
@@ -259,88 +284,6 @@ if PYQT5_AVAILABLE:
             except Exception as e:
                 logger.error(f"❌ Error en filtrado por tipo: {str(e)}")
                 return df
-
-    class ReportGenerator:
-        """Generador de reportes"""
-        
-        def __init__(self, results=None):
-            self.results = results or []
-        
-        def generate_report(self):
-            """Generar reporte de resultados - VERSIÓN CORREGIDA Y CON DEBUG"""
-            print("🔍 [DEBUG] generate_report() iniciado")
-            
-            if not self.current_report_data:
-                error_msg = "❌ No hay datos de reporte disponibles"
-                print(f"🔍 [DEBUG] {error_msg}")
-                QMessageBox.warning(self, "Advertencia", error_msg)
-                return None
-            
-            try:
-                print("🔍 [DEBUG] Creando ReportGenerator...")
-                
-                # ✅ USAR SIEMPRE LA MISMA UBICACIÓN
-                reports_dir = "reports"
-                os.makedirs(reports_dir, exist_ok=True)
-                print(f"🔍 [DEBUG] Directorio de reportes: {os.path.abspath(reports_dir)}")
-                
-                # ✅ GENERACIÓN DIRECTA SIN DEPENDENCIAS EXTERNAS
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                report_path = os.path.join(reports_dir, f"reporte_ampm_{timestamp}.xlsx")
-                
-                print(f"🔍 [DEBUG] Intentando crear: {report_path}")
-                print(f"🔍 [DEBUG] Datos disponibles: {self.current_report_data.keys()}")
-                
-                # VERIFICAR ESTRUCTURA DE DATOS
-                if 'results' not in self.current_report_data:
-                    error_msg = "❌ No hay resultados en los datos del reporte"
-                    print(f"🔍 [DEBUG] {error_msg}")
-                    QMessageBox.warning(self, "Error", error_msg)
-                    return None
-                
-                # PREPARAR DATOS
-                report_rows = []
-                for result in self.current_report_data.get('results', []):
-                    report_rows.append({
-                        'Guia': result.get('guia_number', 'N/A'),
-                        'Estado': 'EXITOSO' if result.get('success') else 'FALLIDO',
-                        'Mensaje': result.get('message', result.get('error', 'N/A')),
-                        'Tiempo_Procesamiento': f"{result.get('processing_time', 0):.2f}s" if result.get('processing_time') else 'N/A',
-                        'Timestamp': result.get('timestamp', 'N/A'),
-                        'Recuperable': 'Sí' if result.get('recoverable') else 'No',
-                        'Tipo_Error': 'Ya Entregada' if result.get('recoverable') else 'Error Real' if not result.get('success') else 'Éxito'
-                    })
-                
-                print(f"🔍 [DEBUG] {len(report_rows)} filas preparadas para el reporte")
-                
-                # CREAR DATAFRAME Y GUARDAR
-                df = pd.DataFrame(report_rows)
-                df.to_excel(report_path, index=False)
-                
-                # VERIFICAR QUE SE CREÓ
-                if os.path.exists(report_path):
-                    file_size = os.path.getsize(report_path)
-                    print(f"🔍 [DEBUG] ✅ Reporte creado exitosamente: {report_path} ({file_size} bytes)")
-                    self.add_log_message(f"📋 Reporte generado: {report_path}")
-                    
-                    # MOSTRAR UBICACIÓN ABSOLUTA
-                    absolute_path = os.path.abspath(report_path)
-                    self.add_log_message(f"📁 Ubicación: {absolute_path}")
-                    
-                    return report_path
-                else:
-                    error_msg = "❌ El archivo de reporte no se creó"
-                    print(f"🔍 [DEBUG] {error_msg}")
-                    QMessageBox.warning(self, "Error", error_msg)
-                    return None
-                    
-            except Exception as e:
-                error_msg = f"❌ Error crítico al generar reporte: {str(e)}"
-                print(f"🔍 [DEBUG] {error_msg}")
-                print(f"🔍 [DEBUG] Traceback: {traceback.format_exc()}")
-                self.add_log_message(error_msg)
-                QMessageBox.critical(self, "Error", error_msg)
-                return None
 
     class AutomationThread(QThread):
         """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica"""
@@ -360,6 +303,11 @@ if PYQT5_AVAILABLE:
         def run(self):
             try:
                 self.log_message.emit("🔍 Iniciando proceso de automatización...")
+                
+                # Verificar disponibilidad del automator
+                if not AUTOMATOR_AVAILABLE:
+                    self.finished_error.emit("El módulo de automatización no está disponible. Verifica la instalación.")
+                    return
                 
                 # 1. Leer y validar datos del Excel
                 self.log_message.emit("📊 Leyendo archivo Excel...")
@@ -390,12 +338,11 @@ if PYQT5_AVAILABLE:
                 recovered_count = 0
                 results = []
                 
-                # ✅ SOLUCIÓN: Usar enumerate() para obtener índice secuencial correcto
                 for current_index, (index, guia_data) in enumerate(guias_df.iterrows(), 1):
                     if not self.is_running:
                         break
                         
-                    # ✅ CÁLCULO CORRECTO DEL PROGRESO
+                    # Cálculo del progreso
                     progress = int((current_index) / total_guias * 100)
                     guia_number = str(guia_data.get('numero_guia', 'N/A')).strip()
                     self.progress_updated.emit(progress, f"Procesando guía {current_index} de {total_guias}")
@@ -406,7 +353,7 @@ if PYQT5_AVAILABLE:
                         # Procesar la guía usando el automator robusto
                         result = automator.process_shipment_with_retry(guia_data)
                         
-                        # CORRECCIÓN: Usar el número real de guía en los resultados
+                        # Usar el número real de guía en los resultados
                         result['guia_number'] = guia_number
                         results.append(result)
                         
@@ -442,28 +389,23 @@ if PYQT5_AVAILABLE:
                 # 4. Cerrar navegador
                 automator.close()
                 
-                # 5. Preparar reporte final - CORREGIDO EL CONTEO
+                # 5. Preparar reporte final
                 if self.is_running:
                     self.log_message.emit("📋 Generando reporte final...")
                     
-                    # VERIFICACIÓN: Contar éxitos reales desde los resultados
+                    # Contar resultados reales
                     real_success_count = sum(1 for r in results if r.get('success') == True)
                     real_recovered_count = sum(1 for r in results if r.get('recoverable') == True and not r.get('success'))
                     real_error_count = sum(1 for r in results if not r.get('success') and not r.get('recoverable'))
                     
-                    # Usar los conteos reales en lugar de los acumulados
-                    final_success_count = real_success_count
-                    final_recovered_count = real_recovered_count
-                    final_error_count = real_error_count
-                    
                     # Log de verificación
-                    self.log_message.emit(f"🔍 VERIFICACIÓN: Éxitos={final_success_count}, Entregadas={final_recovered_count}, Errores={final_error_count}")
+                    self.log_message.emit(f"🔍 VERIFICACIÓN: Éxitos={real_success_count}, Entregadas={real_recovered_count}, Errores={real_error_count}")
                     
                     report_data = {
                         'total': total_guias,
-                        'success': final_success_count,
-                        'errors': final_error_count + final_recovered_count,  # Total de no-éxitos
-                        'recovered': final_recovered_count,
+                        'success': real_success_count,
+                        'errors': real_error_count + real_recovered_count,
+                        'recovered': real_recovered_count,
                         'results': results,
                         'timestamp': datetime.now(),
                         'excel_file': self.excel_file_path
@@ -548,8 +490,6 @@ if PYQT5_AVAILABLE:
             title_font.setPointSize(18)
             title_font.setBold(True)
             title.setFont(title_font)
-            subtitle_font = QFont()
-            subtitle_font.setPointSize(16)
             
             # Subtítulo
             subtitle = QLabel("Carga automática de guías de envío en Grupo AMPM")
@@ -604,15 +544,14 @@ if PYQT5_AVAILABLE:
             self.log_text.setReadOnly(True)
             self.log_text.setMaximumHeight(250)
             self.log_text.setPlaceholderText("Los logs de ejecución aparecerán aquí...")
-            self.log_text.setFont(QFont("Consolas", 16))
-            
+            self.log_text.setFont(QFont("Consolas", 10))
             
             progress_layout.addWidget(self.status_label)
             progress_layout.addWidget(self.progress_bar)
             progress_layout.addWidget(QLabel("Logs de ejecución:"))
             progress_layout.addWidget(self.log_text)
             
-            # Grupo de controles - MODIFICADO
+            # Grupo de controles
             controls_group = QGroupBox("3. Controles")
             controls_layout = QHBoxLayout(controls_group)
             
@@ -631,16 +570,15 @@ if PYQT5_AVAILABLE:
             self.generate_report_btn.setEnabled(False)
             self.generate_report_btn.setMinimumHeight(40)
             
-            # ✅ NUEVO BOTÓN: Abrir carpeta de reportes
             self.open_reports_btn = QPushButton("📁 Abrir Carpeta de Reportes")
             self.open_reports_btn.clicked.connect(self.open_reports_folder)
             self.open_reports_btn.setMinimumHeight(40)
-            self.open_reports_btn.setEnabled(True)  # Siempre habilitado
+            self.open_reports_btn.setEnabled(True)
             
             controls_layout.addWidget(self.start_btn)
             controls_layout.addWidget(self.stop_btn)
             controls_layout.addWidget(self.generate_report_btn)
-            controls_layout.addWidget(self.open_reports_btn)  # ✅ Agregar nuevo botón
+            controls_layout.addWidget(self.open_reports_btn)
             
             # Agregar grupos al layout
             layout.addWidget(file_group)
@@ -670,25 +608,36 @@ if PYQT5_AVAILABLE:
             config_layout.addLayout(headless_layout)
             
             # Información del sistema
-            info_label = QLabel(
-                f"AMPMAuto v1.3.2\n"
-                f"Desarrollado por: Kevin Brian Ibarra Pineda ISIC\n"
-                f"Python: {sys.version.split()[0]}\n"
-                f"Directorio de trabajo: {os.getcwd()}\n\n"
-                f"Características:\n"
-                f"• Manejo robusto de errores\n"
-                f"• Detección automática de modales\n"
-                f"• Reintentos inteligentes\n"
-                f"• Reportes detallados\n"
-                f"• Filtrado automático de guías inválidas\n"
-                f"• Manejo mejorado de loading"
-            )
+            system_info = f"""
+AMPMAuto v1.4.0
+Desarrollado por: Kevin Brian Ibarra Pineda ISIC
+Python: {sys.version.split()[0]}
+Directorio de trabajo: {os.getcwd()}
+
+Módulos disponibles:
+• PyQt5: {'✅' if PYQT5_AVAILABLE else '❌'}
+• Automator: {'✅' if AUTOMATOR_AVAILABLE else '❌'}
+• ReportGenerator: {'✅' if REPORT_GENERATOR_AVAILABLE else '❌'}
+• Utils: {'✅' if UTILS_AVAILABLE else '❌'}
+
+Características:
+• Manejo robusto de errores
+• Detección automática de modales  
+• Reintentos inteligentes
+• Reportes detallados (Excel + PDF)
+• Filtrado automático de guías inválidas
+• Manejo mejorado de loading
+• Generación automática de reportes
+"""
+            info_label = QLabel(system_info)
             info_label.setStyleSheet("""
                 background-color: #f8f9fa; 
                 padding: 15px; 
                 border-radius: 5px; 
                 border: 1px solid #dee2e6;
                 line-height: 1.4;
+                font-family: Consolas, monospace;
+                font-size: 10px;
             """)
             info_label.setWordWrap(True)
             
@@ -702,7 +651,7 @@ if PYQT5_AVAILABLE:
         
         def create_footer(self):
             """Crear el pie de página"""
-            footer = QLabel("© 2024 AMPMAuto -  Desarrollado por Kevin Brian Ibarra Pineda ISIC")
+            footer = QLabel("© 2024 AMPMAuto - Desarrollado por Kevin Brian Ibarra Pineda ISIC")
             footer.setAlignment(Qt.AlignCenter)
             footer.setStyleSheet("color: #6c757d; padding: 10px; border-top: 1px solid #dee2e6; margin-top: 10px;")
             return footer
@@ -836,7 +785,6 @@ if PYQT5_AVAILABLE:
                     self.add_log_message(f"📊 Después de limpieza: {clean_count} guías válidas")
                     
                     if clean_count > 0:
-                        # Mostrar las primeras 5 guías como preview
                         sample_guias = df_clean['numero_guia'].head(5).tolist()
                         self.add_log_message(f"📋 Primeras guías válidas: {', '.join(map(str, sample_guias))}")
                     
@@ -853,9 +801,17 @@ if PYQT5_AVAILABLE:
                 QMessageBox.warning(self, "Advertencia", "Por favor selecciona un archivo Excel primero.")
                 return
             
-            # Verificar que el archivo existe
             if not os.path.exists(self.excel_file_path):
                 QMessageBox.critical(self, "Error", "El archivo seleccionado no existe.")
+                return
+            
+            if not AUTOMATOR_AVAILABLE:
+                QMessageBox.critical(self, "Error", 
+                    "El módulo de automatización no está disponible.\n\n"
+                    "Verifica que:\n"
+                    "• Selenium esté instalado: pip install selenium\n"
+                    "• El archivo automator.py exista\n"
+                    "• Los drivers del navegador estén configurados")
                 return
             
             # Deshabilitar botones durante la ejecución
@@ -890,8 +846,6 @@ if PYQT5_AVAILABLE:
             self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
             self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
-            
-
         
         def stop_automation(self):
             """Detener el proceso de automatización"""
@@ -941,7 +895,7 @@ if PYQT5_AVAILABLE:
             success_count = report_data['success']
             recovered_count = report_data.get('recovered', 0)
             total_count = report_data['total']
-            real_errors = report_data['errors'] - recovered_count  # Errores reales
+            real_errors = report_data['errors'] - recovered_count
             
             self.add_log_message(f"📊 RESUMEN FINAL:")
             self.add_log_message(f"   📦 Total de guías: {total_count}")
@@ -953,7 +907,7 @@ if PYQT5_AVAILABLE:
                 effectiveness = (success_count / total_count) * 100
                 self.add_log_message(f"   📈 Efectividad: {effectiveness:.1f}%")
             
-            # Mostrar guías exitosas específicamente
+            # Mostrar guías exitosas
             if success_count > 0:
                 successful_guias = [r['guia_number'] for r in report_data['results'] if r.get('success')]
                 if len(successful_guias) <= 10:
@@ -970,13 +924,27 @@ if PYQT5_AVAILABLE:
             self.select_file_btn.setEnabled(True)
             self.generate_report_btn.setEnabled(True)
             
-            # ✅ GENERAR REPORTE AUTOMÁTICAMENTE
-            report_path = self.generate_report()
-            
-            if report_path:
-                self.add_log_message(f"📋 Reporte guardado en: {report_path}")
+            # ✅ GENERAR REPORTE AUTOMÁTICAMENTE CON EL NUEVO SISTEMA
+            if REPORT_GENERATOR_AVAILABLE:
+                self.add_log_message("📋 Generando reporte profesional...")
+                excel_path, pdf_path = generate_detailed_report(
+                    results=report_data['results'],
+                    excel_file=os.path.basename(self.excel_file_path)
+                )
+                
+                if excel_path:
+                    self.add_log_message(f"📊 Reporte Excel generado: {excel_path}")
+                if pdf_path:
+                    self.add_log_message(f"📄 Reporte PDF generado: {pdf_path}")
+                
+                if not excel_path and not pdf_path:
+                    self.add_log_message("⚠️ No se pudieron generar los reportes automáticamente")
             else:
-                self.add_log_message("❌ No se pudo generar el reporte automáticamente")
+                self.add_log_message("⚠️ ReportGenerator no disponible - generando reporte básico")
+                # Fallback al método anterior
+                excel_path = self._generate_basic_report()
+                if excel_path:
+                    self.add_log_message(f"📋 Reporte básico generado: {excel_path}")
             
             # Mostrar resumen
             QMessageBox.information(
@@ -988,7 +956,7 @@ if PYQT5_AVAILABLE:
                 f"⚠️ Guías ya entregadas: {recovered_count}\n"
                 f"❌ Errores reales: {real_errors}\n"
                 f"📈 Efectividad: {effectiveness:.1f}%\n\n"
-                f"El reporte detallado se ha guardado automáticamente."
+                f"Los reportes detallados se han guardado automáticamente."
             )
         
         def automation_error(self, error_message):
@@ -1008,7 +976,8 @@ if PYQT5_AVAILABLE:
                 f"Por favor verifica:\n"
                 f"• Tu conexión a internet\n"
                 f"• Las credenciales de AMPM\n"
-                f"• El formato del archivo Excel"
+                f"• El formato del archivo Excel\n"
+                f"• Que Selenium esté instalado correctamente"
             )
             
             self.reset_ui()
@@ -1021,27 +990,51 @@ if PYQT5_AVAILABLE:
             self.progress_bar.setVisible(False)
         
         def generate_report(self):
-            """Generar reporte de resultados - VERSIÓN CORREGIDA CON RUTA CORRECTA"""
+            """Generar reporte de resultados - VERSIÓN MEJORADA"""
+            if not self.current_report_data:
+                QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
+                return None
+            
             try:
-                # ✅ USAR LA MISMA RUTA QUE LOS LOGS (AppData/Local/AMPMAuto/reports/)
-                from utils.logger import get_app_data_path
-                base_dir = get_app_data_path()
-                reports_dir = os.path.join(base_dir, "reports")
+                if REPORT_GENERATOR_AVAILABLE:
+                    self.add_log_message("📋 Generando reporte profesional...")
+                    excel_path, pdf_path = generate_detailed_report(
+                        results=self.current_report_data.get('results', []),
+                        excel_file=os.path.basename(self.excel_file_path) if self.excel_file_path else "N/A"
+                    )
+                    
+                    if excel_path:
+                        self.add_log_message(f"📊 Reporte Excel generado: {excel_path}")
+                    if pdf_path:
+                        self.add_log_message(f"📄 Reporte PDF generado: {pdf_path}")
+                    
+                    if not excel_path and not pdf_path:
+                        self.add_log_message("❌ No se pudieron generar los reportes")
+                        return None
+                    
+                    return excel_path
+                else:
+                    self.add_log_message("⚠️ ReportGenerator no disponible - usando generador básico")
+                    return self._generate_basic_report()
+                    
+            except Exception as e:
+                error_msg = f"❌ Error generando reporte: {str(e)}"
+                self.add_log_message(error_msg)
+                QMessageBox.critical(self, "Error", error_msg)
+                return None
+        
+        def _generate_basic_report(self):
+            """Generar reporte básico (fallback)"""
+            try:
+                # Crear carpeta de reportes si no existe
+                reports_dir = "reports"
                 os.makedirs(reports_dir, exist_ok=True)
-                
-                print(f"🔍 [DEBUG] Ruta de reportes: {reports_dir}")
-                
-                if not self.current_report_data:
-                    QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
-                    return None
                 
                 # Generar nombre de archivo
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 report_path = os.path.join(reports_dir, f"reporte_ampm_{timestamp}.xlsx")
                 
-                print(f"🔍 [DEBUG] Intentando crear reporte en: {report_path}")
-                
-                # Preparar datos
+                # Preparar datos básicos
                 report_rows = []
                 for result in self.current_report_data.get('results', []):
                     report_rows.append({
@@ -1050,37 +1043,33 @@ if PYQT5_AVAILABLE:
                         'Mensaje': result.get('message', result.get('error', 'N/A')),
                         'Tiempo_Procesamiento': f"{result.get('processing_time', 0):.2f}s" if result.get('processing_time') else 'N/A',
                         'Timestamp': result.get('timestamp', 'N/A'),
-                        'Recuperable': 'Sí' if result.get('recoverable') else 'No',
-                        'Tipo_Error': 'Ya Entregada' if result.get('recoverable') else 'Error Real' if not result.get('success') else 'Éxito'
+                        'Recuperable': 'Sí' if result.get('recoverable') else 'No'
                     })
                 
                 # Crear DataFrame y guardar
                 df = pd.DataFrame(report_rows)
                 df.to_excel(report_path, index=False)
                 
-                print(f"🔍 [DEBUG] Reporte creado exitosamente: {report_path}")
-                
-                # Mostrar en logs de la interfaz
-                self.add_log_message(f"📋 Reporte generado: {report_path}")
-                
-                return report_path
+                if os.path.exists(report_path):
+                    self.add_log_message(f"📋 Reporte básico generado: {report_path}")
+                    return report_path
+                else:
+                    self.add_log_message("❌ No se pudo crear el archivo de reporte")
+                    return None
                     
             except Exception as e:
-                error_msg = f"❌ Error generando reporte: {str(e)}"
-                print(f"🔍 [DEBUG] {error_msg}")
-                import traceback
-                print(f"🔍 [DEBUG] Traceback: {traceback.format_exc()}")
+                error_msg = f"❌ Error en generador básico: {str(e)}"
                 self.add_log_message(error_msg)
                 return None
             
         def open_reports_folder(self):
             """Abrir la carpeta de reportes en el explorador de archivos"""
             try:
-                from utils.logger import get_app_data_path
-                
-                # Obtener la ruta de reportes (la misma que usamos para generar reportes)
-                base_dir = get_app_data_path()
-                reports_dir = os.path.join(base_dir, "reports")
+                if REPORT_GENERATOR_AVAILABLE:
+                    from report_generator import get_app_data_path
+                    reports_dir = os.path.join(get_app_data_path(), "reports")
+                else:
+                    reports_dir = "reports"
                 
                 # Crear la carpeta si no existe
                 os.makedirs(reports_dir, exist_ok=True)
@@ -1100,7 +1089,7 @@ if PYQT5_AVAILABLE:
                     else:
                         subprocess.run(["xdg-open", reports_dir])
                 
-                self.add_log_message(f"📁 Carpeta de reportes abierta: {reports_dir}")
+                self.add_log_message(f"📁 Carpeta de reportes abierta: {os.path.abspath(reports_dir)}")
                 
             except Exception as e:
                 error_msg = f"❌ Error al abrir carpeta de reportes: {str(e)}"
@@ -1128,9 +1117,9 @@ def main():
         # Crear aplicación
         app = QApplication(sys.argv)
         app.setApplicationName("AMPMAuto")
-        app.setApplicationVersion("1.0")
+        app.setApplicationVersion("1.6.0")
         app.setApplicationDisplayName("AMPMAuto - Automatización de Guías")
-        app.setFont(QFont("Segoe UI", 14))
+        app.setFont(QFont("Segoe UI", 10))
         
         # Crear y mostrar ventana principal
         window = MainWindow()
