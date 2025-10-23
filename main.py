@@ -863,20 +863,52 @@ Características:
             self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
         
         def stop_automation(self):
-            """Detener el proceso de automatización"""
+            """Detener el proceso de automatización - VERSIÓN MEJORADA"""
             if self.automation_thread and self.automation_thread.isRunning():
                 reply = QMessageBox.question(
                     self, 
                     "Confirmar Detención", 
-                    "¿Estás seguro de que quieres detener el proceso?",
+                    "¿Estás seguro de que quieres detener el proceso?\n\nSe perderá el progreso actual.",
                     QMessageBox.Yes | QMessageBox.No,
                     QMessageBox.No
                 )
                 
                 if reply == QMessageBox.Yes:
-                    self.automation_thread.stop()
+                    # Deshabilitar botón de detener inmediatamente para evitar múltiples clics
+                    self.stop_btn.setEnabled(False)
                     self.add_log_message("⏹️ Solicitando detención del proceso...")
                     self.status_label.setText("Deteniendo...")
+                    self.status_label.setStyleSheet("color: #fd7e14; font-weight: bold;")
+                    
+                    # Detener el hilo
+                    self.automation_thread.stop()
+                    
+                    # ✅ CONEXIÓN TEMPORAL para resetear la UI cuando el hilo termine
+                    self.automation_thread.finished.connect(self._on_automation_stopped)
+            
+        def _on_automation_stopped(self):
+            """Manejador cuando el hilo se detiene"""
+            try:
+                self.add_log_message("🛑 PROCESO DETENIDO POR EL USUARIO")
+                self.add_log_message("📊 Progreso actual perdido - puedes reiniciar con un nuevo archivo")
+                
+                # Resetear la UI
+                self.reset_ui()
+                
+                # Actualizar estado
+                self.status_label.setText("Proceso detenido por el usuario")
+                self.status_label.setStyleSheet("color: #fd7e14; font-weight: bold;")
+                self.progress_bar.setValue(0)
+                
+                # Desconectar la señal para evitar múltiples llamadas
+                try:
+                    self.automation_thread.finished.disconnect(self._on_automation_stopped)
+                except:
+                    pass
+                    
+            except Exception as e:
+                self.add_log_message(f"⚠️ Error al detener proceso: {str(e)}")
+                self.reset_ui()
         
         def update_progress(self, value, message):
             """Actualizar barra de progreso y estado"""
@@ -998,11 +1030,23 @@ Características:
             self.reset_ui()
         
         def reset_ui(self):
-            """Restablecer la interfaz a su estado inicial"""
-            self.stop_btn.setEnabled(False)
-            self.select_file_btn.setEnabled(True)
-            self.start_btn.setEnabled(True)
-            self.progress_bar.setVisible(False)
+            """Restablecer la interfaz a su estado inicial - VERSIÓN MEJORADA"""
+            try:
+                # Habilitar/Deshabilitar botones correctamente
+                self.stop_btn.setEnabled(False)
+                self.select_file_btn.setEnabled(True)
+                self.start_btn.setEnabled(True if self.excel_file_path else False)
+                self.generate_report_btn.setEnabled(True if self.current_report_data else False)
+                
+                # Ocultar barra de progreso
+                self.progress_bar.setVisible(False)
+                self.progress_bar.setValue(0)
+                
+                # Forzar actualización de la interfaz
+                QApplication.processEvents()
+                
+            except Exception as e:
+                print(f"Error en reset_ui: {e}")
         
         def generate_report(self):
             """Generar reporte de resultados - VERSIÓN MEJORADA"""
