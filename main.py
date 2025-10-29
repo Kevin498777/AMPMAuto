@@ -137,7 +137,7 @@ if PYQT5_AVAILABLE:
                 logger.error(f"❌ Error leyendo Excel: {str(e)}")
                 logger.error(traceback.format_exc())
                 return pd.DataFrame()   
-        
+
         def _clean_and_filter_data(self, df):
             """Limpiar y filtrar datos - CON MEJORES LOGS"""
             try:
