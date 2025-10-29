@@ -1,4 +1,4 @@
-# main.py - Interfaz gráfica principal de AMPMAuto
+
 import sys
 import os
 import pandas as pd
@@ -8,7 +8,7 @@ import traceback
 import json
 import re
 
-# Importar PyQt5 PRIMERO, antes de cualquier otro código
+
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                                  QPushButton, QLabel, QTextEdit, QProgressBar, 
