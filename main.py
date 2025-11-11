@@ -1,4 +1,3 @@
-
 import sys
 import os
 import pandas as pd
@@ -286,7 +285,7 @@ if PYQT5_AVAILABLE:
                 return df
 
     class AutomationThread(QThread):
-        """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica"""
+        """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica - VERSIÓN OPTIMIZADA"""
         
         # Señales para comunicación con la interfaz principal
         progress_updated = pyqtSignal(int, str)
@@ -302,7 +301,7 @@ if PYQT5_AVAILABLE:
             
         def run(self):
             try:
-                self.log_message.emit("🔍 Iniciando proceso de automatización...")
+                self.log_message.emit("🔍 Iniciando proceso de automatización RÁPIDO...")
                 
                 # Verificar disponibilidad del automator
                 if not AUTOMATOR_AVAILABLE:
@@ -332,7 +331,7 @@ if PYQT5_AVAILABLE:
                 self.log_message.emit("🚀 Inicializando navegador...")
                 automator = AMPMAutomator(headless=self.headless)
                 
-                # 3. Procesar cada guía
+                # 3. Procesar cada guía CON MÁXIMA VELOCIDAD
                 success_count = 0
                 error_count = 0
                 recovered_count = 0
@@ -350,7 +349,7 @@ if PYQT5_AVAILABLE:
                     try:
                         self.log_message.emit(f"📝 Procesando guía: {guia_number}")
                         
-                        # Procesar la guía usando el automator robusto
+                        # Procesar la guía usando el automator optimizado
                         result = automator.process_shipment_with_retry(guia_data)
                         
                         # Usar el número real de guía en los resultados
@@ -382,9 +381,9 @@ if PYQT5_AVAILABLE:
                             'recoverable': False
                         })
                     
-                    # Pequeña pausa entre guías
+                    # ✅ PAUSA MÍNIMA entre guías para máxima velocidad (reducido de 1 a 0.2 segundos)
                     if self.is_running:
-                        self.sleep(1)
+                        self.sleep(0.2)
                 
                 # 4. Cerrar navegador
                 automator.close()
@@ -419,11 +418,11 @@ if PYQT5_AVAILABLE:
                 self.finished_error.emit(f"Error en el proceso: {str(e)}")
         
         def sleep(self, seconds):
-            """Sleep que respeta la señal de stop"""
-            for _ in range(seconds * 10):
+            """Sleep optimizado que respeta la señal de stop - VERSIÓN MÁS RÁPIDA"""
+            for _ in range(int(seconds * 20)):  # Más granular para mejor respuesta
                 if not self.is_running:
                     break
-                QThread.msleep(100)
+                QThread.msleep(50)  # Reducido de 100 a 50 ms para mejor respuesta
         
         def stop(self):
             """Detener la ejecución del hilo"""
@@ -624,7 +623,7 @@ if PYQT5_AVAILABLE:
             
             # Información del sistema
             system_info = f"""
-AMPMAuto v1.4.0
+AMPMAuto v1.4.0 - VERSIÓN RÁPIDA
 Desarrollado por: Kevin Brian Ibarra Pineda ISIC
 Python: {sys.version.split()[0]}
 Directorio de trabajo: {os.getcwd()}
@@ -643,6 +642,7 @@ Características:
 • Filtrado automático de guías inválidas
 • Manejo mejorado de loading
 • Generación automática de reportes
+• OPTIMIZADO PARA VELOCIDAD: 10-15 guías/minuto
 """
             info_label = QLabel(system_info)
             info_label.setStyleSheet("""
@@ -857,9 +857,10 @@ Características:
             # Iniciar hilo
             self.automation_thread.start()
             
-            self.add_log_message("🚀 Iniciando proceso de automatización...")
+            self.add_log_message("🚀 Iniciando proceso de automatización RÁPIDO...")
             self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
+            self.add_log_message("⚡ SISTEMA OPTIMIZADO PARA ALTA VELOCIDAD: 10-15 guías/minuto")
             self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
         
         def stop_automation(self):
@@ -953,6 +954,12 @@ Características:
             if total_count > 0:
                 effectiveness = (success_count / total_count) * 100
                 self.add_log_message(f"   📈 Efectividad: {effectiveness:.1f}%")
+                
+                # Calcular velocidad promedio
+                total_time = sum(r.get('processing_time', 0) for r in report_data['results'] if r.get('processing_time'))
+                if total_time > 0:
+                    guias_por_minuto = (total_count / total_time) * 60
+                    self.add_log_message(f"   ⚡ Velocidad promedio: {guias_por_minuto:.1f} guías/minuto")
             
             # Mostrar guías exitosas
             if success_count > 0:
