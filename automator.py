@@ -319,7 +319,7 @@ class AMPMAutomatorRobusto:
             
             username = self.config.ampm_username
             password = self.config.ampm_password
-            login_url = "https://tpak.grupoampm.com/Convenio/Login?returnUrl=/"
+            login_url = "https://convenios.grupoampm.com/Convenio/Login?returnUrl=/"
             
             if not username or not password:
                 raise Exception("Credenciales de AMPM no configuradas en el archivo .env")
