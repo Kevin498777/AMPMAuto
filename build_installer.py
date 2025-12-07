@@ -334,7 +334,7 @@ def create_installer_script():
 #define MyAppAssocKey StringChange(MyAppAssocName, " ", "") + MyAppAssocExt
 
 [Setup]
-AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}}
+AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}}}
 AppName={{#MyAppName}}
 AppVersion={{#MyAppVersion}}
 AppPublisher={{#MyAppPublisher}}
