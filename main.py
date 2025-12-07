@@ -7,7 +7,6 @@ import traceback
 import json
 import re
 
-
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
                                  QPushButton, QLabel, QTextEdit, QProgressBar, 
@@ -65,224 +64,55 @@ if PYQT5_AVAILABLE:
         print(f"Advertencia: No se pudo importar ReportGenerator: {e}")
         REPORT_GENERATOR_AVAILABLE = False
 
+    # Importar el DataHandler CORREGIDO desde data_handler.py
+    try:
+        from data_handler import DataHandler
+        DATA_HANDLER_AVAILABLE = True
+        print("✅ DataHandler disponible (versión corregida para leer todas las filas)")
+    except ImportError as e:
+        print(f"Advertencia: No se pudo importar DataHandler: {e}")
+        DATA_HANDLER_AVAILABLE = False
+        # Crear una versión básica como fallback
+        class DataHandler:
+            """Manejador de datos para archivos Excel - VERSIÓN BÁSICA"""
+            
+            def __init__(self, excel_file_path):
+                self.excel_file_path = excel_file_path
+            
+            def read_excel(self):
+                """Leer archivo Excel sin encabezados para no perder la primera fila"""
+                try:
+                    # Leer sin encabezados
+                    df = pd.read_excel(self.excel_file_path, header=None)
+                    
+                    # Buscar números de 11 dígitos en todas las celdas
+                    todas_las_guias = []
+                    for idx, fila in df.iterrows():
+                        for valor in fila:
+                            if pd.isna(valor):
+                                continue
+                            valor_str = str(valor).strip()
+                            
+                            # Buscar guías de 11 dígitos
+                            patron = r'\b\d{11}\b'
+                            matches = re.findall(patron, valor_str)
+                            
+                            for guia in matches:
+                                if guia not in todas_las_guias:
+                                    todas_las_guias.append(guia)
+                    
+                    if todas_las_guias:
+                        df_final = pd.DataFrame({'numero_guia': todas_las_guias})
+                        return df_final
+                    else:
+                        return pd.DataFrame()
+                        
+                except Exception as e:
+                    print(f"Error leyendo Excel: {str(e)}")
+                    return pd.DataFrame()
+
     # Configurar logging
     logger = setup_logger() if UTILS_AVAILABLE else logging.getLogger(__name__)
-
-    class DataHandler:
-        """Manejador de datos para archivos Excel - VERSIÓN MEJORADA"""
-        
-        def __init__(self, excel_file_path):
-            self.excel_file_path = excel_file_path
-        
-        def read_excel(self):
-            """Leer archivo Excel y extraer guías - CON SOPORTE PARA JSON"""
-            try:
-                # Verificar que el archivo existe
-                if not os.path.exists(self.excel_file_path):
-                    logger.error(f"❌ El archivo no existe: {self.excel_file_path}")
-                    return pd.DataFrame()
-                
-                # Leer archivo Excel
-                df = pd.read_excel(self.excel_file_path)
-                logger.info(f"📊 Archivo Excel leído: {len(df)} filas encontradas")
-                
-                # Verificar que tenga datos
-                if df.empty:
-                    logger.warning("⚠️ El archivo Excel está vacío")
-                    return df
-                
-                # Verificar que tenga la columna necesaria
-                if 'numero_guia' not in df.columns:
-                    # Intentar mapear otras columnas comunes
-                    column_mapping = {
-                        'guia': 'numero_guia',
-                        'número_guia': 'numero_guia', 
-                        'guía': 'numero_guia',
-                        'tracking': 'numero_guia',
-                        'número': 'numero_guia',
-                        'guia_number': 'numero_guia',
-                        'guia_id': 'numero_guia',
-                        'tracking_number': 'numero_guia'
-                    }
-                    
-                    for old_col, new_col in column_mapping.items():
-                        if old_col in df.columns:
-                            df = df.rename(columns={old_col: new_col})
-                            logger.info(f"✅ Columna renombrada: '{old_col}' -> 'numero_guia'")
-                            break
-                    else:
-                        # Si no encuentra ninguna columna conocida, usar la primera
-                        first_col = df.columns[0]
-                        df = df.rename(columns={first_col: 'numero_guia'})
-                        logger.info(f"✅ Usando primera columna: '{first_col}' -> 'numero_guia'")
-                
-                # ✅ PROCESAR GUÍAS EN FORMATO JSON
-                df = self._process_json_guides(df)
-                
-                # ✅ FILTRADO NORMAL
-                df = self._clean_and_filter_data(df)
-                
-                logger.info(f"📊 Archivo contiene {len(df)} guías válidas después de limpieza")
-                
-                if len(df) > 0:
-                    sample_guias = df['numero_guia'].head(5).tolist()
-                    logger.info(f"📋 Primeras guías válidas: {', '.join(map(str, sample_guias))}")
-                else:
-                    logger.warning("⚠️ No hay guías válidas después de la limpieza")
-                
-                return df
-                    
-            except Exception as e:
-                logger.error(f"❌ Error leyendo Excel: {str(e)}")
-                logger.error(traceback.format_exc())
-                return pd.DataFrame()   
-
-        def _clean_and_filter_data(self, df):
-            """Limpiar y filtrar datos - CON MEJORES LOGS"""
-            try:
-                if df.empty:
-                    return df
-                    
-                original_count = len(df)
-                
-                # Primero eliminar None values (de la extracción JSON)
-                df = df[df['numero_guia'].notna()]
-                
-                # Convertir a string y limpiar
-                df['numero_guia'] = df['numero_guia'].astype(str)
-                
-                # Filtrar filas inválidas
-                df = df[
-                    (~df['numero_guia'].isna()) &
-                    (df['numero_guia'].str.strip() != '') &
-                    (df['numero_guia'].str.lower() != 'nan') &
-                    (df['numero_guia'] != 'None') &
-                    (df['numero_guia'] != 'null') &
-                    (~df['numero_guia'].str.contains(r'^\s*nan\s*$', case=False, na=False))
-                ]
-                
-                # Remover .0 de los números flotantes
-                df['numero_guia'] = df['numero_guia'].str.replace(r'\.0$', '', regex=True)
-                
-                # Limpiar espacios
-                df['numero_guia'] = df['numero_guia'].str.strip()
-                
-                # ✅ FILTRADO POR LONGITUD DE GUÍA - SOLO 11 DÍGITOS
-                df = self._filter_by_guide_length(df)
-                
-                # Log de limpieza
-                removed_count = original_count - len(df)
-                if removed_count > 0:
-                    logger.info(f"📊 Limpieza completada: {removed_count} guías eliminadas, {len(df)} guías válidas restantes")
-                
-                return df
-                    
-            except Exception as e:
-                logger.error(f"❌ Error en limpieza de datos: {str(e)}")
-                return df
-
-        def _process_json_guides(self, df):
-            """Procesar guías en formato JSON y extraer el número de guía"""
-            try:
-                if df.empty:
-                    return df
-                    
-                original_count = len(df)
-                processed_count = 0
-                
-                # Función para extraer guía de diferentes formatos
-                def extract_guide_number(guide_value):
-                    if pd.isna(guide_value) or guide_value is None:
-                        return None
-                        
-                    guide_str = str(guide_value).strip()
-                    
-                    # Caso 1: Formato JSON como {"ID":"45706599155","t":"lm"}
-                    if guide_str.startswith('{') and guide_str.endswith('}'):
-                        try:
-                            json_data = json.loads(guide_str)
-                            if 'ID' in json_data:
-                                extracted_guide = str(json_data['ID']).strip()
-                                logger.info(f"✅ Extraída guía JSON: {guide_str} -> {extracted_guide}")
-                                return extracted_guide
-                        except json.JSONDecodeError:
-                            logger.warning(f"⚠️ No se pudo decodificar JSON: {guide_str}")
-                    
-                    # Caso 2: Buscar patrones de guía en texto
-                    # Patrón para guías de 11 dígitos
-                    eleven_digit_pattern = r'\b\d{11}\b'
-                    matches = re.findall(eleven_digit_pattern, guide_str)
-                    if matches:
-                        logger.info(f"✅ Extraída guía de texto: {guide_str} -> {matches[0]}")
-                        return matches[0]
-                    
-                    # Caso 3: Si ya es un número de guía válido, mantenerlo
-                    if re.match(r'^\d{11}$', guide_str):
-                        return guide_str
-                    
-                    # Si no coincide con ningún patrón, devolver el valor original
-                    return guide_str
-                
-                # Aplicar la extracción a todas las guías
-                df['numero_guia'] = df['numero_guia'].apply(extract_guide_number)
-                
-                # Contar cuántas se procesaron exitosamente
-                processed_count = df['numero_guia'].notna().sum()
-                
-                logger.info(f"📊 Procesamiento JSON: {processed_count}/{original_count} guías procesadas")
-                
-                return df
-                
-            except Exception as e:
-                logger.error(f"❌ Error procesando guías JSON: {str(e)}")
-                return df
-
-        def _filter_by_guide_length(self, df):
-            """Filtrar guías por longitud - SOLO 11 DÍGITOS"""
-            try:
-                if df.empty:
-                    return df
-                    
-                original_count = len(df)
-                
-                # Patrón para identificar guías de 11 dígitos
-                eleven_digit_pattern = r'^\d{11}$'
-                
-                # Clasificar guías
-                valid_guias = df['numero_guia'].str.match(eleven_digit_pattern, na=False)
-                
-                # Contar por tipo
-                count_valid = valid_guias.sum()
-                count_invalid = (~valid_guias).sum()
-                
-                # Log informativo
-                logger.info("📋 CLASIFICACIÓN DE GUÍAS DETECTADA:")
-                logger.info(f"   🟢 Válidas (11 dígitos): {count_valid} guías")
-                logger.info(f"   ⚫ Inválidas: {count_invalid} guías (otros formatos)")
-                
-                # Mostrar ejemplos de cada tipo
-                if count_valid > 0:
-                    ejemplos = df[valid_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos válidos: {', '.join(ejemplos)}")
-                
-                if count_invalid > 0:
-                    ejemplos = df[~valid_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos inválidos: {', '.join(ejemplos)}")
-                    logger.warning("   ⚠️  Las guías que no tienen 11 dígitos no se procesarán")
-                
-                # ✅ FILTRO CRÍTICO: Mantener SOLO guías de 11 dígitos
-                df_filtrado = df[valid_guias].copy()
-                
-                removed_by_type = original_count - len(df_filtrado)
-                if removed_by_type > 0:
-                    logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO tienen 11 dígitos")
-                    logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías válidas (11 dígitos)")
-                
-                return df_filtrado
-                
-            except Exception as e:
-                logger.error(f"❌ Error en filtrado por longitud: {str(e)}")
-                return df
 
     class AutomationThread(QThread):
         """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica - VERSIÓN OPTIMIZADA"""
@@ -559,7 +389,6 @@ if PYQT5_AVAILABLE:
     }
 """)
             
-            
             progress_layout.addWidget(self.status_label)
             progress_layout.addWidget(self.progress_bar)
             progress_layout.addWidget(QLabel("Logs de ejecución:"))
@@ -633,6 +462,7 @@ Módulos disponibles:
 • Automator: {'✅' if AUTOMATOR_AVAILABLE else '❌'}
 • ReportGenerator: {'✅' if REPORT_GENERATOR_AVAILABLE else '❌'}
 • Utils: {'✅' if UTILS_AVAILABLE else '❌'}
+• DataHandler: {'✅' if DATA_HANDLER_AVAILABLE else '❌'}
 
 Características:
 • Manejo robusto de errores
@@ -643,6 +473,7 @@ Características:
 • Manejo mejorado de loading
 • Generación automática de reportes Excel
 • OPTIMIZADO PARA VELOCIDAD: 10-15 guías/minuto
+• ✅ CORRECCIÓN: Lee TODAS las filas incluyendo la primera
 """
             info_label = QLabel(system_info)
             info_label.setStyleSheet("""
@@ -786,17 +617,27 @@ Características:
                 self.start_btn.setEnabled(True)
                 self.add_log_message(f"✅ Archivo seleccionado: {file_path}")
                 
-                # Mostrar preview del archivo
+                # Mostrar preview del archivo usando el DataHandler corregido
                 try:
-                    df = pd.read_excel(file_path)
-                    original_count = len(df)
-                    
-                    # Aplicar limpieza para el preview
+                    # Usar el DataHandler corregido que lee TODAS las filas
                     data_handler = DataHandler(file_path)
                     df_clean = data_handler.read_excel()
                     clean_count = len(df_clean)
                     
-                    self.add_log_message(f"📊 Archivo original: {original_count} guías")
+                    # Leer también el archivo original para comparar
+                    df_original = pd.read_excel(file_path, header=None)
+                    original_count = 0
+                    
+                    # Contar celdas que podrían contener guías en el original
+                    for idx, fila in df_original.iterrows():
+                        for valor in fila:
+                            if pd.isna(valor):
+                                continue
+                            valor_str = str(valor).strip()
+                            if re.search(r'\d{11}', valor_str):
+                                original_count += 1
+                    
+                    self.add_log_message(f"📊 Archivo original: {original_count} posibles guías detectadas")
                     self.add_log_message(f"📊 Después de limpieza: {clean_count} guías válidas (11 dígitos)")
                     
                     if clean_count > 0:
@@ -862,6 +703,7 @@ Características:
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
             self.add_log_message("⚡ SISTEMA OPTIMIZADO PARA ALTA VELOCIDAD: 10-15 guías/minuto")
             self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas (solo 11 dígitos)")
+            self.add_log_message("✅ CORRECCIÓN APLICADA: Ahora se lee TODAS las filas incluyendo la primera")
         
         def stop_automation(self):
             """Detener el proceso de automatización - VERSIÓN MEJORADA"""
