@@ -167,8 +167,8 @@ if PYQT5_AVAILABLE:
                 # Limpiar espacios
                 df['numero_guia'] = df['numero_guia'].str.strip()
                 
-                # ✅ FILTRADO POR TIPO DE GUÍA - SOLO MERCADO LIBRE
-                df = self._filter_by_shipping_type(df)
+                # ✅ FILTRADO POR LONGITUD DE GUÍA - SOLO 11 DÍGITOS
+                df = self._filter_by_guide_length(df)
                 
                 # Log de limpieza
                 removed_count = original_count - len(df)
@@ -209,15 +209,15 @@ if PYQT5_AVAILABLE:
                             logger.warning(f"⚠️ No se pudo decodificar JSON: {guide_str}")
                     
                     # Caso 2: Buscar patrones de guía en texto
-                    # Patrón para guías de Mercado Libre (45 + 9 dígitos)
-                    mercado_libre_pattern = r'45\d{9}'
-                    matches = re.findall(mercado_libre_pattern, guide_str)
+                    # Patrón para guías de 11 dígitos
+                    eleven_digit_pattern = r'\b\d{11}\b'
+                    matches = re.findall(eleven_digit_pattern, guide_str)
                     if matches:
                         logger.info(f"✅ Extraída guía de texto: {guide_str} -> {matches[0]}")
                         return matches[0]
                     
                     # Caso 3: Si ya es un número de guía válido, mantenerlo
-                    if re.match(r'^45\d{9}$', guide_str):
+                    if re.match(r'^\d{11}$', guide_str):
                         return guide_str
                     
                     # Si no coincide con ningún patrón, devolver el valor original
@@ -237,51 +237,51 @@ if PYQT5_AVAILABLE:
                 logger.error(f"❌ Error procesando guías JSON: {str(e)}")
                 return df
 
-        def _filter_by_shipping_type(self, df):
-            """Filtrar guías por tipo de transportista - SOLO MERCADO LIBRE"""
+        def _filter_by_guide_length(self, df):
+            """Filtrar guías por longitud - SOLO 11 DÍGITOS"""
             try:
                 if df.empty:
                     return df
                     
                 original_count = len(df)
                 
-                # Patrones para identificar tipos de guías
-                mercado_libre_pattern = r'^45\d{9}$'  # Guías Mercado Libre: empiezan con 45, 11 dígitos
+                # Patrón para identificar guías de 11 dígitos
+                eleven_digit_pattern = r'^\d{11}$'
                 
                 # Clasificar guías
-                mercado_libre_guias = df['numero_guia'].str.match(mercado_libre_pattern, na=False)
+                valid_guias = df['numero_guia'].str.match(eleven_digit_pattern, na=False)
                 
                 # Contar por tipo
-                count_mercado_libre = mercado_libre_guias.sum()
-                count_otras = (~mercado_libre_guias).sum()
+                count_valid = valid_guias.sum()
+                count_invalid = (~valid_guias).sum()
                 
                 # Log informativo
                 logger.info("📋 CLASIFICACIÓN DE GUÍAS DETECTADA:")
-                logger.info(f"   🟢 Mercado Libre: {count_mercado_libre} guías (45 + 9 dígitos)")
-                logger.info(f"   ⚫ Otras: {count_otras} guías (otros formatos)")
+                logger.info(f"   🟢 Válidas (11 dígitos): {count_valid} guías")
+                logger.info(f"   ⚫ Inválidas: {count_invalid} guías (otros formatos)")
                 
                 # Mostrar ejemplos de cada tipo
-                if count_mercado_libre > 0:
-                    ejemplos = df[mercado_libre_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos Mercado Libre: {', '.join(ejemplos)}")
+                if count_valid > 0:
+                    ejemplos = df[valid_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos válidos: {', '.join(ejemplos)}")
                 
-                if count_otras > 0:
-                    ejemplos = df[~mercado_libre_guias]['numero_guia'].head(3).tolist()
-                    logger.info(f"   📝 Ejemplos Otras: {', '.join(ejemplos)}")
-                    logger.warning("   ⚠️  Las guías que no son de Mercado Libre no se procesarán")
+                if count_invalid > 0:
+                    ejemplos = df[~valid_guias]['numero_guia'].head(3).tolist()
+                    logger.info(f"   📝 Ejemplos inválidos: {', '.join(ejemplos)}")
+                    logger.warning("   ⚠️  Las guías que no tienen 11 dígitos no se procesarán")
                 
-                # ✅ FILTRO CRÍTICO: Mantener SOLO guías de Mercado Libre
-                df_filtrado = df[mercado_libre_guias].copy()
+                # ✅ FILTRO CRÍTICO: Mantener SOLO guías de 11 dígitos
+                df_filtrado = df[valid_guias].copy()
                 
                 removed_by_type = original_count - len(df_filtrado)
                 if removed_by_type > 0:
-                    logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO son de Mercado Libre")
-                    logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías de Mercado Libre")
+                    logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO tienen 11 dígitos")
+                    logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías válidas (11 dígitos)")
                 
                 return df_filtrado
                 
             except Exception as e:
-                logger.error(f"❌ Error en filtrado por tipo: {str(e)}")
+                logger.error(f"❌ Error en filtrado por longitud: {str(e)}")
                 return df
 
     class AutomationThread(QThread):
@@ -314,11 +314,11 @@ if PYQT5_AVAILABLE:
                 guias_df = data_handler.read_excel()
                 
                 if guias_df.empty:
-                    self.finished_error.emit("El archivo Excel está vacío o no contiene guías válidas de Mercado Libre")
+                    self.finished_error.emit("El archivo Excel está vacío o no contiene guías válidas de 11 dígitos")
                     return
                     
                 total_guias = len(guias_df)
-                self.log_message.emit(f"📦 Se encontraron {total_guias} guías VÁLIDAS de Mercado Libre para procesar")
+                self.log_message.emit(f"📦 Se encontraron {total_guias} guías VÁLIDAS (11 dígitos) para procesar")
                 
                 # Mostrar las guías que se van a procesar
                 guias_list = guias_df['numero_guia'].head(10).tolist()
@@ -579,7 +579,7 @@ if PYQT5_AVAILABLE:
             self.stop_btn.setEnabled(False)
             self.stop_btn.setMinimumHeight(40)
             
-            self.generate_report_btn = QPushButton("📊 Generar Reporte")
+            self.generate_report_btn = QPushButton("📊 Generar Reporte Excel")
             self.generate_report_btn.clicked.connect(self.generate_report)
             self.generate_report_btn.setEnabled(False)
             self.generate_report_btn.setMinimumHeight(40)
@@ -638,10 +638,10 @@ Características:
 • Manejo robusto de errores
 • Detección automática de modales  
 • Reintentos inteligentes
-• Reportes detallados (Excel + PDF)
+• Reportes Excel detallados
 • Filtrado automático de guías inválidas
 • Manejo mejorado de loading
-• Generación automática de reportes
+• Generación automática de reportes Excel
 • OPTIMIZADO PARA VELOCIDAD: 10-15 guías/minuto
 """
             info_label = QLabel(system_info)
@@ -797,7 +797,7 @@ Características:
                     clean_count = len(df_clean)
                     
                     self.add_log_message(f"📊 Archivo original: {original_count} guías")
-                    self.add_log_message(f"📊 Después de limpieza: {clean_count} guías válidas")
+                    self.add_log_message(f"📊 Después de limpieza: {clean_count} guías válidas (11 dígitos)")
                     
                     if clean_count > 0:
                         sample_guias = df_clean['numero_guia'].head(5).tolist()
@@ -861,7 +861,7 @@ Características:
             self.add_log_message(f"📁 Archivo: {os.path.basename(self.excel_file_path)}")
             self.add_log_message(f"🌐 Modo: {'Headless' if headless else 'Visible'}")
             self.add_log_message("⚡ SISTEMA OPTIMIZADO PARA ALTA VELOCIDAD: 10-15 guías/minuto")
-            self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas")
+            self.add_log_message("🛡️  Sistema mejorado con filtrado automático de guías inválidas (solo 11 dígitos)")
         
         def stop_automation(self):
             """Detener el proceso de automatización - VERSIÓN MEJORADA"""
@@ -978,21 +978,18 @@ Características:
             self.select_file_btn.setEnabled(True)
             self.generate_report_btn.setEnabled(True)
             
-            # ✅ GENERAR REPORTE AUTOMÁTICAMENTE CON EL NUEVO SISTEMA
+            # ✅ GENERAR REPORTE AUTOMÁTICAMENTE SOLO EXCEL
             if REPORT_GENERATOR_AVAILABLE:
-                self.add_log_message("📋 Generando reporte profesional...")
-                excel_path, pdf_path = generate_detailed_report(
+                self.add_log_message("📋 Generando reporte Excel...")
+                excel_path = generate_detailed_report(
                     results=report_data['results'],
                     excel_file=os.path.basename(self.excel_file_path)
                 )
                 
                 if excel_path:
                     self.add_log_message(f"📊 Reporte Excel generado: {excel_path}")
-                if pdf_path:
-                    self.add_log_message(f"📄 Reporte PDF generado: {pdf_path}")
-                
-                if not excel_path and not pdf_path:
-                    self.add_log_message("⚠️ No se pudieron generar los reportes automáticamente")
+                else:
+                    self.add_log_message("⚠️ No se pudo generar el reporte Excel automáticamente")
             else:
                 self.add_log_message("⚠️ ReportGenerator no disponible - generando reporte básico")
                 # Fallback al método anterior
@@ -1010,7 +1007,7 @@ Características:
                 f"⚠️ Guías ya entregadas: {recovered_count}\n"
                 f"❌ Errores reales: {real_errors}\n"
                 f"📈 Efectividad: {effectiveness:.1f}%\n\n"
-                f"Los reportes detallados se han guardado automáticamente."
+                f"El reporte Excel se ha guardado automáticamente."
             )
         
         def automation_error(self, error_message):
@@ -1056,29 +1053,25 @@ Características:
                 print(f"Error en reset_ui: {e}")
         
         def generate_report(self):
-            """Generar reporte de resultados - VERSIÓN MEJORADA"""
+            """Generar reporte de resultados - VERSIÓN MEJORADA (SOLO EXCEL)"""
             if not self.current_report_data:
                 QMessageBox.warning(self, "Advertencia", "No hay datos de reporte disponibles.")
                 return None
             
             try:
                 if REPORT_GENERATOR_AVAILABLE:
-                    self.add_log_message("📋 Generando reporte profesional...")
-                    excel_path, pdf_path = generate_detailed_report(
+                    self.add_log_message("📋 Generando reporte Excel...")
+                    excel_path = generate_detailed_report(
                         results=self.current_report_data.get('results', []),
                         excel_file=os.path.basename(self.excel_file_path) if self.excel_file_path else "N/A"
                     )
                     
                     if excel_path:
                         self.add_log_message(f"📊 Reporte Excel generado: {excel_path}")
-                    if pdf_path:
-                        self.add_log_message(f"📄 Reporte PDF generado: {pdf_path}")
-                    
-                    if not excel_path and not pdf_path:
-                        self.add_log_message("❌ No se pudieron generar los reportes")
+                        return excel_path
+                    else:
+                        self.add_log_message("❌ No se pudo generar el reporte Excel")
                         return None
-                    
-                    return excel_path
                 else:
                     self.add_log_message("⚠️ ReportGenerator no disponible - usando generador básico")
                     return self._generate_basic_report()

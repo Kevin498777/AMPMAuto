@@ -1,4 +1,4 @@
-# build_installer.py - VERSIÓN MEJORADA Y COMPLETA
+# build_installer.py - VERSIÓN MEJORADA Y COMPLETA (SIN REPORTLAB)
 import os
 import shutil
 import subprocess
@@ -35,7 +35,7 @@ def check_prerequisites():
     return True
 
 def install_dependencies():
-    """Instalar todas las dependencias necesarias"""
+    """Instalar todas las dependencias necesarias (SIN REPORTLAB)"""
     print("📦 Instalando dependencias de Python...")
     
     dependencies = [
@@ -43,7 +43,6 @@ def install_dependencies():
         'pandas>=2.0.0', 
         'PyQt5>=5.15.0',
         'python-dotenv>=1.0.0',
-        'reportlab>=4.0.0',
         'openpyxl>=3.1.0',
         'chromedriver-autoinstaller>=0.4.0',
         'pyinstaller>=5.0.0',
@@ -187,7 +186,7 @@ def clean_build_dirs():
                     pass
 
 def create_spec_file():
-    """Crear archivo .spec para PyInstaller - MEJORADO"""
+    """Crear archivo .spec para PyInstaller - MEJORADO (SIN REPORTLAB)"""
     print("📝 Creando archivo de configuración PyInstaller...")
     
     spec_content = '''# AMPMAuto.spec - GENERADO AUTOMÁTICAMENTE
@@ -206,13 +205,7 @@ a = Analysis(
     ],
     hiddenimports=[
         'selenium', 'PyQt5', 'pandas', 'openpyxl',
-        'reportlab', 'dotenv', 'chromedriver_autoinstaller',
-        'reportlab.graphics.charts.area',
-        'reportlab.graphics.charts.barcharts',
-        'reportlab.graphics.charts.linecharts',
-        'reportlab.graphics.charts.piecharts',
-        'reportlab.graphics.widgets',
-        'reportlab.graphics.samples',
+        'dotenv', 'chromedriver_autoinstaller',
         'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets',
         'pandas._libs.tslibs.timedeltas',
         'pandas._libs.tslibs.nattype',
@@ -221,7 +214,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'matplotlib'],
+    excludes=['tkinter', 'matplotlib', 'reportlab'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -277,7 +270,6 @@ def build_with_pyinstaller():
             '--hidden-import', 'PyQt5',
             '--hidden-import', 'selenium',
             '--hidden-import', 'pandas',
-            '--hidden-import', 'reportlab',
             '--hidden-import', 'chromedriver_autoinstaller',
             '--hidden-import', 'openpyxl',
             '--hidden-import', 'python-dotenv',
@@ -342,7 +334,7 @@ def create_installer_script():
 #define MyAppAssocKey StringChange(MyAppAssocName, " ", "") + MyAppAssocExt
 
 [Setup]
-AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}
+AppId={{{{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}}}
 AppName={{#MyAppName}}
 AppVersion={{#MyAppVersion}}
 AppPublisher={{#MyAppPublisher}}
@@ -354,8 +346,6 @@ ChangesAssociations=yes
 DefaultGroupName={{#MyAppName}}
 AllowNoIcons=yes
 LicenseFile=LICENSE.txt
-;InfoBeforeFile=INFO.txt
-;InfoAfterFile=AFTER.txt
 OutputDir=AMPMAuto_Installer
 OutputBaseFilename=AMPMAuto_Setup
 SetupIconFile=icon.ico
@@ -507,7 +497,6 @@ AMPM_PASSWORD=tu_contraseña
 HEADLESS_MODE=True
 TIMEOUT=30
 MAX_RETRIES=3
-GENERATE_PDF_REPORTS=True
 GENERATE_EXCEL_REPORTS=True
 ''')
         print("✅ .env.example creado")
@@ -548,7 +537,7 @@ def main():
         if not check_prerequisites():
             return 1
         
-        # 2. Instalar dependencias
+        # 2. Instalar dependencias (SIN REPORTLAB)
         if not install_dependencies():
             print("❌ Error instalando dependencias")
             return 1

@@ -44,11 +44,11 @@ class DataHandler:
             return pd.DataFrame()
     
     def _buscar_guias_en_todas_las_columnas(self, df):
-        """Buscar guías de Mercado Libre en TODAS las columnas del Excel"""
+        """Buscar guías de 11 dígitos en TODAS las columnas del Excel"""
         import re
         
         todas_las_guias = []
-        patron_guia = r'45\d{9}'  # Patrón exacto para guías Mercado Libre
+        patron_guia = r'\b\d{11}\b'  # Patrón exacto para guías de 11 dígitos
         
         # Contadores para estadísticas
         stats = {
@@ -140,8 +140,8 @@ class DataHandler:
             # Limpiar espacios
             df['numero_guia'] = df['numero_guia'].str.strip()
             
-            # ✅ FILTRADO POR TIPO DE GUÍA - SOLO MERCADO LIBRE
-            df = self._filter_by_shipping_type(df)
+            # ✅ FILTRADO POR LONGITUD DE GUÍA - SOLO 11 DÍGITOS
+            df = self._filter_by_guide_length(df)
             
             # Log de limpieza
             removed_count = original_count - len(df)
@@ -154,59 +154,46 @@ class DataHandler:
             logger.error(f"❌ Error en limpieza de datos: {str(e)}")
             return df
 
-    def _filter_by_shipping_type(self, df):
-        """Filtrar guías por tipo de transportista - SOLO MERCADO LIBRE"""
+    def _filter_by_guide_length(self, df):
+        """Filtrar guías por longitud - SOLO 11 DÍGITOS"""
         try:
             original_count = len(df)
             
-            # Patrones para identificar tipos de guías
-            mercado_libre_pattern = r'^45\d{9}$'  # Guías Mercado Libre: empiezan con 45, 11 dígitos
-            shein_pattern = r'^\d{10,12}$'        # Guías Shein: 10-12 dígitos (pero no empiezan con 45)
-            ampm_pattern = r'^AMPM'               # Guías AMPM: empiezan con AMPM
+            # Patrón para identificar guías de 11 dígitos
+            eleven_digit_pattern = r'^\d{11}$'
             
             # Clasificar guías
-            mercado_libre_guias = df['numero_guia'].str.match(mercado_libre_pattern, na=False)
-            shein_guias = ~mercado_libre_guias & df['numero_guia'].str.match(shein_pattern, na=False)
-            ampm_guias = df['numero_guia'].str.match(ampm_pattern, na=False)
-            otras_guias = ~(mercado_libre_guias | shein_guias | ampm_guias)
+            valid_guias = df['numero_guia'].str.match(eleven_digit_pattern, na=False)
             
             # Contar por tipo
-            count_mercado_libre = mercado_libre_guias.sum()
-            count_shein = shein_guias.sum()
-            count_ampm = ampm_guias.sum()
-            count_otras = otras_guias.sum()
+            count_valid = valid_guias.sum()
+            count_invalid = (~valid_guias).sum()
             
             # Log informativo
             logger.info("📋 CLASIFICACIÓN DE GUÍAS DETECTADA:")
-            logger.info(f"   🟢 Mercado Libre: {count_mercado_libre} guías (45 + 9 dígitos)")
-            logger.info(f"   🔵 Shein: {count_shein} guías (10-12 dígitos)")
-            logger.info(f"   🟡 AMPM: {count_ampm} guías (prefijo AMPM)")
-            logger.info(f"   ⚫ Otras: {count_otras} guías (otros formatos)")
+            logger.info(f"   🟢 Válidas (11 dígitos): {count_valid} guías")
+            logger.info(f"   ⚫ Inválidas: {count_invalid} guías (otros formatos)")
             
             # Mostrar ejemplos de cada tipo
-            if count_mercado_libre > 0:
-                ejemplos = df[mercado_libre_guias]['numero_guia'].head(3).tolist()
-                logger.info(f"   📝 Ejemplos Mercado Libre: {', '.join(ejemplos)}")
+            if count_valid > 0:
+                ejemplos = df[valid_guias]['numero_guia'].head(3).tolist()
+                logger.info(f"   📝 Ejemplos válidos: {', '.join(ejemplos)}")
             
-            if count_shein > 0:
-                ejemplos = df[shein_guias]['numero_guia'].head(3).tolist()
-                logger.info(f"   📝 Ejemplos Shein: {', '.join(ejemplos)}")
-                logger.warning("   ⚠️  Las guías Shein requieren nombre del receptor - NO PROCESABLES")
+            if count_invalid > 0:
+                ejemplos = df[~valid_guias]['numero_guia'].head(3).tolist()
+                logger.info(f"   📝 Ejemplos inválidos: {', '.join(ejemplos)}")
+                logger.warning("   ⚠️  Las guías que no tienen 11 dígitos no se procesarán")
             
-            if count_ampm > 0:
-                ejemplos = df[ampm_guias]['numero_guia'].head(3).tolist()
-                logger.info(f"   📝 Ejemplos AMPM: {', '.join(ejemplos)}")
-            
-            # ✅ FILTRO CRÍTICO: Mantener SOLO guías de Mercado Libre
-            df_filtrado = df[mercado_libre_guias].copy()
+            # ✅ FILTRO CRÍTICO: Mantener SOLO guías de 11 dígitos
+            df_filtrado = df[valid_guias].copy()
             
             removed_by_type = original_count - len(df_filtrado)
             if removed_by_type > 0:
-                logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO son de Mercado Libre")
-                logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías de Mercado Libre")
+                logger.warning(f"🚫 Se filtraron {removed_by_type} guías que NO tienen 11 dígitos")
+                logger.info(f"✅ Se procesarán SOLO {len(df_filtrado)} guías válidas (11 dígitos)")
             
             return df_filtrado
             
         except Exception as e:
-            logger.error(f"❌ Error en filtrado por tipo: {str(e)}")
+            logger.error(f"❌ Error en filtrado por longitud: {str(e)}")
             return df
