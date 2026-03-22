@@ -312,11 +312,16 @@ class AMPMAutomatorRobusto:
             logger.warning(f"⚠️ Error al verificar errores: {str(e)}")
             return None
 
+# automator.py - MODIFICACIÓN EN LA FUNCIÓN LOGIN
+# ... (código existente, busca la función login y modifícala)
+
     def login(self):
         """Iniciar sesión en el portal AMPM - OPTIMIZADO"""
         try:
             logger.info("🔐 Iniciando sesión en AMPM...")
             
+            # Obtener credenciales desde la configuración
+            convenio = self.config.ampm_convenio  # NUEVO: obtener convenio de config
             username = self.config.ampm_username
             password = self.config.ampm_password
             login_url = "https://convenios.grupoampm.com/Convenio/Login?returnUrl=/"
@@ -332,7 +337,7 @@ class AMPMAutomatorRobusto:
             # PROCESO DE LOGIN ACELERADO
             convenio_field = self.driver.find_element(By.ID, "ConvenioId")
             convenio_field.clear()
-            convenio_field.send_keys("0")
+            convenio_field.send_keys(convenio)  # MODIFICADO: usar convenio de config
             
             username_field = self.driver.find_element(By.ID, "UserName")
             username_field.clear()

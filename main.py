@@ -1,3 +1,5 @@
+# main.py - VERSIÓN CORREGIDA CON GUARDADO COMPLETO Y REINICIO AUTOMÁTICO
+
 import sys
 import os
 import pandas as pd
@@ -6,12 +8,15 @@ import logging
 import traceback
 import json
 import re
+import subprocess
+import time
 
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
-                                 QPushButton, QLabel, QTextEdit, QProgressBar, 
-                                 QFileDialog, QMessageBox, QWidget, QFrame, 
-                                 QGroupBox, QTabWidget, QCheckBox)
+                                QPushButton, QLabel, QTextEdit, QProgressBar, 
+                                QFileDialog, QMessageBox, QWidget, QFrame, 
+                                QGroupBox, QTabWidget, QCheckBox, QDialog,
+                                QLineEdit, QFormLayout, QDialogButtonBox)
     from PyQt5.QtCore import Qt, QThread, pyqtSignal
     from PyQt5.QtGui import QFont
     PYQT5_AVAILABLE = True
@@ -259,6 +264,127 @@ if PYQT5_AVAILABLE:
             self.is_running = False
             self.log_message.emit("⏹️ Proceso detenido por el usuario")
 
+    class PasswordDialog(QDialog):
+        """Diálogo para ingresar la contraseña de administrador"""
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("Contraseña requerida")
+            self.setModal(True)
+            self.password = None
+            
+            layout = QVBoxLayout()
+            self.setLayout(layout)
+            
+            self.label = QLabel("Ingrese la contraseña de administrador:")
+            layout.addWidget(self.label)
+            
+            self.password_edit = QLineEdit()
+            self.password_edit.setEchoMode(QLineEdit.Password)
+            layout.addWidget(self.password_edit)
+            
+            buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self.accept)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+        
+        def accept(self):
+            self.password = self.password_edit.text()
+            super().accept()
+
+    class CredentialsDialog(QDialog):
+        def __init__(self, config_manager, parent=None):
+            super().__init__(parent)
+            self.config = config_manager
+            self.setWindowTitle("Editar configuración AMPM")
+            self.setModal(True)
+            
+            layout = QVBoxLayout()
+            self.setLayout(layout)
+            
+            # Información sobre la ubicación del archivo
+            file_info = QLabel(f"Archivo de configuración: {self.config.env_file}")
+            file_info.setStyleSheet("color: #666; font-size: 10px;")
+            file_info.setWordWrap(True)
+            layout.addWidget(file_info)
+            
+            form_layout = QFormLayout()
+            
+            # Convenio
+            self.convenio_edit = QLineEdit()
+            self.convenio_edit.setText(self.config.ampm_convenio)
+            form_layout.addRow("Convenio:", self.convenio_edit)
+            
+            # Usuario
+            self.username_edit = QLineEdit()
+            self.username_edit.setText(self.config.ampm_username)
+            form_layout.addRow("Usuario:", self.username_edit)
+            
+            # Contraseña
+            self.password_edit = QLineEdit()
+            self.password_edit.setText(self.config.ampm_password)
+            self.password_edit.setEchoMode(QLineEdit.Password)
+            form_layout.addRow("Contraseña:", self.password_edit)
+            
+            # URL de AMPM
+            self.url_edit = QLineEdit()
+            self.url_edit.setText(self.config.ampm_url)
+            form_layout.addRow("URL de AMPM:", self.url_edit)
+            
+            # Tooltip para la URL
+            self.url_edit.setToolTip("URL completa de acceso a AMPM\nEjemplo: https://convenios.grupoampm.com/Convenio/Login?returnUrl=/")
+            
+            layout.addLayout(form_layout)
+            
+            buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            buttons.accepted.connect(self.save)
+            buttons.rejected.connect(self.reject)
+            layout.addWidget(buttons)
+        
+        def save(self):
+            """Guardar los cambios"""
+            # Validar campos obligatorios
+            if not self.convenio_edit.text().strip():
+                QMessageBox.warning(self, "Campo requerido", "El convenio es obligatorio")
+                return
+                
+            if not self.username_edit.text().strip():
+                QMessageBox.warning(self, "Campo requerido", "El usuario es obligatorio")
+                return
+                
+            if not self.password_edit.text().strip():
+                QMessageBox.warning(self, "Campo requerido", "La contraseña es obligatoria")
+                return
+                
+            if not self.url_edit.text().strip():
+                QMessageBox.warning(self, "Campo requerido", "La URL es obligatoria")
+                return
+            
+            # Guardar las credenciales
+            success = self.config.save_credentials(
+                self.convenio_edit.text().strip(),
+                self.username_edit.text().strip(),
+                self.password_edit.text().strip(),
+                self.url_edit.text().strip()
+            )
+            
+            if success:
+                # Mostrar mensaje con la ubicación del archivo
+                QMessageBox.information(
+                    self,
+                    "Configuración guardada",
+                    f"✅ Configuración actualizada exitosamente.\n\n"
+                    f"Archivo guardado en:\n{self.config.env_file}\n\n"
+                    f"La aplicación se reiniciará para aplicar los cambios."
+                )
+                self.accept()
+            else:
+                QMessageBox.critical(
+                    self, 
+                    "Error", 
+                    f"No se pudieron guardar las credenciales.\n\n"
+                    f"Verifica que tengas permisos de escritura en:\n{self.config.env_file}"
+                )
+
     class MainWindow(QMainWindow):
         """Ventana principal de la aplicación AMPMAuto"""
         
@@ -375,16 +501,16 @@ if PYQT5_AVAILABLE:
             self.log_text.setPlaceholderText("Los logs de ejecución aparecerán aquí...")
             self.log_text.setStyleSheet("""
     QTextEdit {
-        background-color: #f8f9fa;           /* ← Gris muy claro casi blanco */
-        color: #212529;                      /* ← Texto oscuro para contraste */
-        border: 2px solid #ced4da;           /* ← Borde gris suave */
+        background-color: #f8f9fa;
+        color: #212529;
+        border: 2px solid #ced4da;
         border-radius: 8px;
         padding: 15px;
         font-family: Consolas, monospace;
-        font-size: 14pt;                     /* ← Tamaño mantenido */
+        font-size: 14pt;
         font-weight: 500;
         line-height: 1.4;
-        selection-background-color: #007bff; /* ← Azul para texto seleccionado */
+        selection-background-color: #007bff;
         selection-color: white;
     }
 """)
@@ -432,7 +558,7 @@ if PYQT5_AVAILABLE:
             return tab
         
         def create_config_tab(self):
-            """Crear la pestaña de configuración"""
+            """Crear la pestaña de configuración - MODIFICADO PARA INCLUIR BOTÓN DE CREDENCIALES"""
             tab = QWidget()
             layout = QVBoxLayout(tab)
             layout.setSpacing(15)
@@ -450,12 +576,35 @@ if PYQT5_AVAILABLE:
             headless_layout.addStretch()
             config_layout.addLayout(headless_layout)
             
+            # Botón para editar credenciales AMPM
+            credentials_btn = QPushButton("🔐 Editar configuración AMPM")
+            credentials_btn.clicked.connect(self.edit_credentials)
+            credentials_btn.setMinimumHeight(40)
+            credentials_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #007bff;
+                    color: white;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #0056b3;
+                }
+            """)
+            config_layout.addWidget(credentials_btn)
+            
             # Información del sistema
+            # En el método create_config_tab, modifica system_info:
             system_info = f"""
 AMPMAuto v1.4.0 - VERSIÓN RÁPIDA
 Desarrollado por: Kevin Brian Ibarra Pineda ISIC
 Python: {sys.version.split()[0]}
 Directorio de trabajo: {os.getcwd()}
+
+CONFIGURACIÓN ACTUAL:
+• Archivo .env: {self.config.env_file}
+• Convenio: {self.config.ampm_convenio}
+• Usuario: {self.config.ampm_username}
+• URL: {self.config.ampm_url[:50]}...
 
 Módulos disponibles:
 • PyQt5: {'✅' if PYQT5_AVAILABLE else '❌'}
@@ -494,6 +643,64 @@ Características:
             layout.addStretch()
             
             return tab
+        
+        def edit_credentials(self):
+            """Abrir diálogo para editar credenciales AMPM"""
+            # Primero, pedir la contraseña de administrador
+            password_dialog = PasswordDialog(self)
+            if password_dialog.exec_() == QDialog.Accepted:
+                if password_dialog.password != "KillerQueen498":
+                    QMessageBox.warning(self, "Contraseña incorrecta", "La contraseña ingresada es incorrecta.")
+                    return
+            
+            # Si la contraseña es correcta, mostrar el diálogo de credenciales
+            cred_dialog = CredentialsDialog(self.config, self)
+            if cred_dialog.exec_() == QDialog.Accepted:
+                reply = QMessageBox.question(
+                    self,
+                    "Reinicio requerido",
+                    "✅ Configuración actualizada exitosamente.\n\n"
+                    "Para aplicar los cambios, la aplicación necesita reiniciarse.\n\n"
+                    "¿Deseas reiniciar ahora?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                
+                if reply == QMessageBox.Yes:
+                    self.restart_application()
+        
+        def restart_application(self):
+            """Reiniciar la aplicación automáticamente"""
+            try:
+                self.add_log_message("🔄 Reiniciando aplicación...")
+                self.add_log_message("⚠️ Por favor espera unos segundos...")
+                
+                # Cerrar la ventana actual
+                self.close()
+                
+                # Esperar un momento para que se cierre correctamente
+                QApplication.processEvents()
+                time.sleep(2)
+                
+                # Reiniciar la aplicación
+                if sys.platform == "win32":
+                    # Para Windows
+                    subprocess.Popen([sys.executable] + sys.argv)
+                else:
+                    # Para Linux/Mac
+                    os.execl(sys.executable, sys.executable, *sys.argv)
+                
+                # Salir de la aplicación actual
+                QApplication.quit()
+                
+            except Exception as e:
+                self.add_log_message(f"❌ Error al reiniciar: {str(e)}")
+                QMessageBox.warning(
+                    self,
+                    "Reinicio manual requerido",
+                    "No se pudo reiniciar automáticamente.\n\n"
+                    "Por favor cierra y vuelve a abrir la aplicación manualmente."
+                )
         
         def create_footer(self):
             """Crear el pie de página"""
