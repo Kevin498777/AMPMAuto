@@ -45,7 +45,8 @@ class AMPMAutomatorRobusto:
             chrome_options.add_argument("--disable-extensions")
             chrome_options.add_argument("--disable-plugins")
             chrome_options.add_argument("--disable-images")  # Deshabilitar imágenes para mayor velocidad
-            chrome_options.add_argument("--disable-javascript")  # Opcional: solo si no afecta funcionalidad
+            # --disable-javascript PROHIBIDO: el portal depende de JS para modales,
+            # auto-rellenar HoraEntrega y validaciones jQuery UI
             chrome_options.add_argument("--disable-background-timer-throttling")
             chrome_options.add_argument("--disable-renderer-backgrounding")
             chrome_options.add_argument("--disable-backgrounding-occluded-windows")
@@ -436,21 +437,64 @@ class AMPMAutomatorRobusto:
             logger.error(f"❌ Error al navegar a entregas: {str(e)}")
             return False
 
+
+    def _fill_hora_field_if_empty(self):
+        """Safety-net: rellena HEntrega y FEntrega si el timepicker jQuery no los inicializó.
+
+        Campo HEntrega (timepicker): formato HH:MM  (24 h, sin segundos)
+        Campo FEntrega (datepicker): formato DD/MM/YYYY
+        En condiciones normales el JS del portal los auto-rellena; este método
+        solo actúa si quedan vacíos (p.ej. carga lenta de JS).
+        """
+        try:
+            from datetime import datetime
+            now = datetime.now()
+            hora_hhmm   = now.strftime('%H:%M')       # 14:07  ← formato del timepicker
+            fecha_dmY   = now.strftime('%d/%m/%Y')    # 11/06/2026 ← formato del datepicker
+            filled = self.driver.execute_script("""
+                var hora  = arguments[0];
+                var fecha = arguments[1];
+                var filled = [];
+                // HEntrega — timepicker, formato HH:MM
+                var h = document.getElementById('HEntrega');
+                if (h && (h.value === '' || h.value === null)) {
+                    h.value = hora;
+                    ['change', 'input', 'blur'].forEach(function(ev) {
+                        h.dispatchEvent(new Event(ev, {bubbles: true}));
+                    });
+                    filled.push('HEntrega=' + hora);
+                }
+                // FEntrega — datepicker, formato DD/MM/YYYY
+                var f = document.getElementById('FEntrega');
+                if (f && (f.value === '' || f.value === null)) {
+                    f.value = fecha;
+                    ['change', 'input', 'blur'].forEach(function(ev) {
+                        f.dispatchEvent(new Event(ev, {bubbles: true}));
+                    });
+                    filled.push('FEntrega=' + fecha);
+                }
+                return filled;
+            """, hora_hhmm, fecha_dmY)
+            if filled:
+                logger.info(f"⏰ Campos de hora/fecha rellenados manualmente: {filled}")
+            return bool(filled)
+        except Exception as e:
+            logger.debug(f"_fill_hora_field_if_empty: {e}")
+            return False
     def _process_single_shipment_with_timeout(self, guia_data):
         """Procesa una guía individual con manejo de modales - VERSIÓN ULTRARRÁPIDA"""
         import time
-        start_time = time.time()
-        
+
         guia_number = guia_data.get('numero_guia', 'N/A')
-        
+
         # ✅ VALIDACIÓN DE GUÍAS VACÍAS O INVÁLIDAS
         guia_str = str(guia_number).strip() if guia_number is not None else ''
-        
-        if (not guia_str or 
+
+        if (not guia_str or
             guia_str.lower() in ['nan', 'none', 'null', ''] or
             guia_str == 'N/A' or
             pd.isna(guia_number)):
-            
+
             logger.warning(f"⚠️ Guía vacía o inválida detectada: '{guia_number}' - Saltando...")
             return {
                 'success': False,
@@ -459,28 +503,28 @@ class AMPMAutomatorRobusto:
                 'recoverable': True,
                 'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
             }
-        
+
         # Remover .0 de números flotantes
         guia_final = guia_str.replace('.0', '') if '.0' in guia_str else guia_str
         logger.info(f"📦 Procesando guía: {guia_final}")
-        
-        def check_timeout():
-            if time.time() - start_time > self.max_processing_time:
-                raise TimeoutException(f"Guía tardó más de {self.max_processing_time} segundos")
-        
-        check_timeout()
-        
+
+        # ── Login y navegación FUERA del timer ─────────────────────────────
+        # login() tarda 10-12 s en la primera guía; ese tiempo no debe
+        # consumir el presupuesto de 15 s reservado para el procesamiento real.
         if not self.is_logged_in:
             if not self.login():
                 return {'success': False, 'error': 'No se pudo iniciar sesión'}
-        
-        check_timeout()
-        
+
         if "EntregaEnvio/Entregar" not in self.driver.current_url:
             if not self.navigate_to_shipments():
                 return {'success': False, 'error': 'No se pudo navegar a la sección de entregas'}
-        
-        check_timeout()
+
+        # Timer arranca DESPUÉS de login/navegación
+        start_time = time.time()
+
+        def check_timeout():
+            if time.time() - start_time > self.max_processing_time:
+                raise TimeoutException(f"Guía tardó más de {self.max_processing_time} segundos")
         
         try:
             # Obtener el campo de guía
@@ -519,16 +563,22 @@ class AMPMAutomatorRobusto:
             
             # Presionar Enter para buscar
             guia_field.send_keys(Keys.ENTER)
-            
+
             check_timeout()
-            # Espera dinámica — sale en cuanto la página está lista o aparece error
-            # Mucho más rápido que sleep(2) para guías ya entregadas (el portal
-            # muestra el error de inmediato sin necesidad de esperar 2 segundos fijos)
+            # Espera dinámica CORRECTA:
+            # - btnEntregar SIEMPRE existe en el DOM → no sirve como señal
+            # - La señal real de "guía cargada" es HEntrega con valor
+            #   (el jQuery timepicker lo rellena cuando termina el AJAX)
+            # - Para guías ya entregadas / no asignadas, aparece un dialog
+            #   de error antes de que HEntrega tenga valor
             try:
                 from selenium.webdriver.support.ui import WebDriverWait as _WDW
                 _WDW(self.driver, 8, poll_frequency=0.2).until(
                     lambda d: (
-                        bool(d.find_elements(By.ID, "btnEntregar"))
+                        # Guía cargada correctamente: HEntrega tiene valor
+                        any(bool(e.get_attribute("value"))
+                            for e in d.find_elements(By.ID, "HEntrega"))
+                        # O apareció un error/modal
                         or any(
                             e.is_displayed() and bool(e.text.strip())
                             for e in d.find_elements(
@@ -561,6 +611,12 @@ class AMPMAutomatorRobusto:
             
             # ✅ ESPERAR A QUE DESAPAREZCA EL LOADING - MÁS RÁPIDO
             self._wait_for_loading_to_disappear(5)
+
+            # Dar al JS del portal tiempo para auto-rellenar campos del formulario
+            # (p.ej. HoraEntrega). La espera dinámica sale tan pronto aparece
+            # btnEntregar, pero el JS puede terminar milisegundos después.
+            time.sleep(0.3)
+            self._fill_hora_field_if_empty()
 
             # ✅ BUSCAR Y HACER CLIC EN BOTÓN ENTREGAR - OPTIMIZADO
             try:

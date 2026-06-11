@@ -194,8 +194,6 @@ if PYQT5_AVAILABLE:
 
                     # ── Saltar si ya fue entregada por otro worker ──────────
                     if self.registry.is_delivered(guia_num):
-                        self.worker_log.emit(self.worker_id,
-                            f"{prefix} ⏭ {guia_num} ya entregada (otro worker)")
                         result = {
                             'success': False, 'recoverable': True,
                             'guia_number': guia_num,
@@ -215,17 +213,12 @@ if PYQT5_AVAILABLE:
                         if result.get('success'):
                             success += 1
                             self.registry.mark_delivered(guia_num)
-                            self.worker_log.emit(self.worker_id, f"{prefix} ✅ {guia_num}")
                         elif result.get('recoverable'):
                             recovered += 1
                             if 'entregada' in result.get('error', '').lower():
                                 self.registry.mark_delivered(guia_num)
-                            self.worker_log.emit(self.worker_id,
-                                f"{prefix} ⚠️ {guia_num} ya entregada")
                         else:
                             error += 1
-                            self.worker_log.emit(self.worker_id,
-                                f"{prefix} ❌ {guia_num}: {result.get('error','')[:80]}")
 
                         self.guide_result.emit(self.worker_id, result)
 
@@ -240,11 +233,11 @@ if PYQT5_AVAILABLE:
                         }
                         self.guide_result.emit(self.worker_id, err_result)
                         self.worker_log.emit(self.worker_id,
-                            f"{prefix} ❌ Excepción en {guia_num}: {exc}")
+                            f"❌ Error en guía {guia_num}: {exc}")
 
             except Exception as fatal:
                 self.worker_log.emit(self.worker_id,
-                    f"{prefix} 💥 Error fatal del worker: {fatal}")
+                    f"💥 Error fatal del proceso: {fatal}")
 
             finally:
                 if self._automator:
@@ -253,8 +246,6 @@ if PYQT5_AVAILABLE:
                     except Exception:
                         pass
 
-            self.worker_log.emit(self.worker_id,
-                f"{prefix} 🏁 Terminado — ✅{success} ⚠️{recovered} ❌{error}")
             self.worker_done.emit(self.worker_id, success, error, recovered)
 
         def stop(self):
@@ -305,12 +296,18 @@ if PYQT5_AVAILABLE:
                         "El archivo Excel está vacío o no contiene guías válidas de 11 dígitos")
                     return
 
+                # Deduplicar por número de guía antes de dividir en chunks
+                # (evita que duplicados en el Excel generen ✅ + ⚠️ en la misma ejecución)
+                antes = len(guias_df)
+                guias_df = guias_df.drop_duplicates(subset=['numero_guia'], keep='first')
+                eliminados = antes - len(guias_df)
+
                 guias_list = [row for _, row in guias_df.iterrows()]
                 total = len(guias_list)
                 self._total = total
 
-                self.log_message.emit(
-                    f"📦 {total} guías encontradas — dividiendo en {self.N_WORKERS} workers")
+                dup_msg = f" ({eliminados} duplicados eliminados)" if eliminados > 0 else ""
+                self.log_message.emit(f"📦 {total} guías encontradas{dup_msg} — iniciando proceso...")
 
                 # Dividir en chunks contiguos
                 chunk_size = (total + self.N_WORKERS - 1) // self.N_WORKERS
@@ -318,9 +315,6 @@ if PYQT5_AVAILABLE:
                           for i in range(self.N_WORKERS)]
                 chunks = [c for c in chunks if c]   # Eliminar chunks vacíos
                 n_actual = len(chunks)
-
-                for i, chunk in enumerate(chunks):
-                    self.log_message.emit(f"  🔸 Worker {i + 1}: {len(chunk)} guías")
 
                 # Registro compartido entre todos los workers
                 registry = DeliveryRegistry()
@@ -336,7 +330,7 @@ if PYQT5_AVAILABLE:
                     w.worker_done.connect(self._on_worker_done,   Qt.DirectConnection)
                     self._workers.append(w)
 
-                self.log_message.emit(f"🚀 Lanzando {n_actual} navegadores en paralelo...")
+                self.log_message.emit("🚀 Iniciando proceso de automatización...")
                 for w in self._workers:
                     w.start()
 
@@ -384,11 +378,19 @@ if PYQT5_AVAILABLE:
                 else:
                     self._error += 1
 
-            pct    = int(done / total * 100) if total else 0
-            guia   = result.get('guia_number', '')
-            icon   = '✅' if result.get('success') else ('⚠️' if result.get('recoverable') else '❌')
-            self.progress_updated.emit(pct,
-                f"{icon} [{worker_id + 1}] {guia} — {done}/{total}")
+            pct  = int(done / total * 100) if total else 0
+            guia = result.get('guia_number', '')
+            if result.get('success'):
+                icon = '✅'
+                detail = ''
+            elif result.get('recoverable'):
+                icon = '⚠️'
+                detail = ' (ya entregada)'
+            else:
+                icon = '❌'
+                detail = f' — {result.get("error","")[:60]}'
+            self.log_message.emit(f"{icon} {guia}{detail}")
+            self.progress_updated.emit(pct, f"Procesando guía {done} de {total}")
 
         def _on_worker_log(self, worker_id: int, msg: str):
             self.log_message.emit(msg)
@@ -658,7 +660,7 @@ if PYQT5_AVAILABLE:
         border-radius: 8px;
         padding: 15px;
         font-family: Consolas, monospace;
-        font-size: 14pt;
+        font-size: 9pt;
         font-weight: 500;
         line-height: 1.4;
         selection-background-color: #007bff;
