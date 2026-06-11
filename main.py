@@ -10,6 +10,7 @@ import json
 import re
 import subprocess
 import time
+import threading
 
 try:
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
@@ -119,150 +120,300 @@ if PYQT5_AVAILABLE:
     # Configurar logging
     logger = setup_logger() if UTILS_AVAILABLE else logging.getLogger(__name__)
 
+    # ════════════════════════════════════════════════════════════════
+    #  DeliveryRegistry — registro thread-safe de guías ya entregadas
+    # ════════════════════════════════════════════════════════════════
+    class DeliveryRegistry:
+        """Registro in-memory + archivo de guías entregadas en esta sesión.
+        Thread-safe para uso concurrente por múltiples WorkerThreads."""
+
+        def __init__(self):
+            appdata = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+            reg_dir = os.path.join(appdata, 'AMPMAuto')
+            os.makedirs(reg_dir, exist_ok=True)
+            self._path = os.path.join(reg_dir, 'delivered_registry.json')
+            self._lock = threading.Lock()
+            self._delivered = set()
+            self._persist()          # Limpia el archivo al inicio de cada sesión
+
+        def is_delivered(self, guia: str) -> bool:
+            with self._lock:
+                return str(guia).strip() in self._delivered
+
+        def mark_delivered(self, guia: str):
+            with self._lock:
+                self._delivered.add(str(guia).strip())
+                self._persist()
+
+        def count(self) -> int:
+            with self._lock:
+                return len(self._delivered)
+
+        def _persist(self):
+            try:
+                with open(self._path, 'w', encoding='utf-8') as f:
+                    json.dump(list(self._delivered), f)
+            except Exception:
+                pass
+
+    # ════════════════════════════════════════════════════════════════
+    #  WorkerThread — un Chrome, un chunk de guías
+    # ════════════════════════════════════════════════════════════════
+    class WorkerThread(QThread):
+        """Procesa un subconjunto de guías con su propio navegador Chrome."""
+
+        guide_result  = pyqtSignal(int, dict)        # (worker_id, result_dict)
+        worker_log    = pyqtSignal(int, str)          # (worker_id, mensaje)
+        worker_done   = pyqtSignal(int, int, int, int)  # (worker_id, success, error, recovered)
+
+        def __init__(self, worker_id: int, guias_chunk: list,
+                     headless: bool, registry: 'DeliveryRegistry'):
+            super().__init__()
+            self.worker_id    = worker_id
+            self.guias_chunk  = guias_chunk
+            self.headless     = headless
+            self.registry     = registry
+            self.is_running   = True
+            self._automator   = None
+
+        def run(self):
+            prefix  = f"[W{self.worker_id + 1}]"
+            success = error = recovered = 0
+
+            try:
+                self.worker_log.emit(self.worker_id, f"{prefix} 🚀 Iniciando navegador...")
+                self._automator = AMPMAutomator(headless=self.headless)
+                self.worker_log.emit(self.worker_id,
+                    f"{prefix} ✅ Listo — procesando {len(self.guias_chunk)} guías")
+
+                for guia_data in self.guias_chunk:
+                    if not self.is_running:
+                        break
+
+                    guia_num = str(guia_data.get('numero_guia', '')).strip().replace('.0', '')
+
+                    # ── Saltar si ya fue entregada por otro worker ──────────
+                    if self.registry.is_delivered(guia_num):
+                        self.worker_log.emit(self.worker_id,
+                            f"{prefix} ⏭ {guia_num} ya entregada (otro worker)")
+                        result = {
+                            'success': False, 'recoverable': True,
+                            'guia_number': guia_num,
+                            'error': 'Ya entregada por otro worker',
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'processing_time': 0,
+                        }
+                        recovered += 1
+                        self.guide_result.emit(self.worker_id, result)
+                        continue
+
+                    # ── Procesar la guía ────────────────────────────────────
+                    try:
+                        result = self._automator.process_shipment_with_retry(guia_data)
+                        result['guia_number'] = guia_num
+
+                        if result.get('success'):
+                            success += 1
+                            self.registry.mark_delivered(guia_num)
+                            self.worker_log.emit(self.worker_id, f"{prefix} ✅ {guia_num}")
+                        elif result.get('recoverable'):
+                            recovered += 1
+                            if 'entregada' in result.get('error', '').lower():
+                                self.registry.mark_delivered(guia_num)
+                            self.worker_log.emit(self.worker_id,
+                                f"{prefix} ⚠️ {guia_num} ya entregada")
+                        else:
+                            error += 1
+                            self.worker_log.emit(self.worker_id,
+                                f"{prefix} ❌ {guia_num}: {result.get('error','')[:80]}")
+
+                        self.guide_result.emit(self.worker_id, result)
+
+                    except Exception as exc:
+                        error += 1
+                        err_result = {
+                            'success': False, 'recoverable': False,
+                            'guia_number': guia_num,
+                            'error': str(exc),
+                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            'processing_time': 0,
+                        }
+                        self.guide_result.emit(self.worker_id, err_result)
+                        self.worker_log.emit(self.worker_id,
+                            f"{prefix} ❌ Excepción en {guia_num}: {exc}")
+
+            except Exception as fatal:
+                self.worker_log.emit(self.worker_id,
+                    f"{prefix} 💥 Error fatal del worker: {fatal}")
+
+            finally:
+                if self._automator:
+                    try:
+                        self._automator.close()
+                    except Exception:
+                        pass
+
+            self.worker_log.emit(self.worker_id,
+                f"{prefix} 🏁 Terminado — ✅{success} ⚠️{recovered} ❌{error}")
+            self.worker_done.emit(self.worker_id, success, error, recovered)
+
+        def stop(self):
+            self.is_running = False
+            if self._automator:
+                try:
+                    self._automator.driver.quit()
+                except Exception:
+                    pass
+
+    # ════════════════════════════════════════════════════════════════
+    #  AutomationThread — coordinador que lanza N workers en paralelo
+    # ════════════════════════════════════════════════════════════════
     class AutomationThread(QThread):
-        """Hilo para ejecutar la automatización sin bloquear la interfaz gráfica - VERSIÓN OPTIMIZADA"""
-        
-        # Señales para comunicación con la interfaz principal
-        progress_updated = pyqtSignal(int, str)
-        log_message = pyqtSignal(str)
+        """Divide las guías en chunks, lanza N workers Chrome en paralelo y
+        agrega sus resultados en los mismos signals que espera la UI."""
+
+        progress_updated = pyqtSignal(int, str)   # (porcentaje 0-100, mensaje)
+        log_message      = pyqtSignal(str)
         finished_success = pyqtSignal(dict)
-        finished_error = pyqtSignal(str)
-        
-        def __init__(self, excel_file_path, headless=True):
+        finished_error   = pyqtSignal(str)
+
+        N_WORKERS = 3
+
+        def __init__(self, excel_file_path: str, headless: bool = True):
             super().__init__()
             self.excel_file_path = excel_file_path
-            self.headless = headless
-            self.is_running = True
-            
+            self.headless        = headless
+            self.is_running      = True
+            self._workers        = []
+            # Contadores thread-safe
+            self._lock      = threading.Lock()
+            self._success   = 0
+            self._error     = 0
+            self._recovered = 0
+            self._done      = 0
+            self._total     = 0
+            self._all_results = []
+
         def run(self):
             try:
-                self.log_message.emit("🔍 Iniciando proceso de automatización RÁPIDO...")
-                
-                # Verificar disponibilidad del automator
-                if not AUTOMATOR_AVAILABLE:
-                    self.finished_error.emit("El módulo de automatización no está disponible. Verifica la instalación.")
-                    return
-                
-                # 1. Leer y validar datos del Excel
                 self.log_message.emit("📊 Leyendo archivo Excel...")
                 data_handler = DataHandler(self.excel_file_path)
                 guias_df = data_handler.read_excel()
-                
+
                 if guias_df.empty:
-                    self.finished_error.emit("El archivo Excel está vacío o no contiene guías válidas de 11 dígitos")
+                    self.finished_error.emit(
+                        "El archivo Excel está vacío o no contiene guías válidas de 11 dígitos")
                     return
-                    
-                total_guias = len(guias_df)
-                self.log_message.emit(f"📦 Se encontraron {total_guias} guías VÁLIDAS (11 dígitos) para procesar")
-                
-                # Mostrar las guías que se van a procesar
-                guias_list = guias_df['numero_guia'].head(10).tolist()
-                if total_guias > 10:
-                    self.log_message.emit(f"📋 Guías a procesar (primeras 10): {', '.join(map(str, guias_list))}...")
+
+                guias_list = [row for _, row in guias_df.iterrows()]
+                total = len(guias_list)
+                self._total = total
+
+                self.log_message.emit(
+                    f"📦 {total} guías encontradas — dividiendo en {self.N_WORKERS} workers")
+
+                # Dividir en chunks contiguos
+                chunk_size = (total + self.N_WORKERS - 1) // self.N_WORKERS
+                chunks = [guias_list[i * chunk_size:(i + 1) * chunk_size]
+                          for i in range(self.N_WORKERS)]
+                chunks = [c for c in chunks if c]   # Eliminar chunks vacíos
+                n_actual = len(chunks)
+
+                for i, chunk in enumerate(chunks):
+                    self.log_message.emit(f"  🔸 Worker {i + 1}: {len(chunk)} guías")
+
+                # Registro compartido entre todos los workers
+                registry = DeliveryRegistry()
+
+                # Crear workers
+                self._workers = []
+                for i, chunk in enumerate(chunks):
+                    w = WorkerThread(i, chunk, self.headless, registry)
+                    # DirectConnection: el slot corre en el hilo del worker,
+                    # sin necesidad de un event loop en AutomationThread.run()
+                    w.guide_result.connect(self._on_guide_result, Qt.DirectConnection)
+                    w.worker_log.connect(self._on_worker_log,     Qt.DirectConnection)
+                    w.worker_done.connect(self._on_worker_done,   Qt.DirectConnection)
+                    self._workers.append(w)
+
+                self.log_message.emit(f"🚀 Lanzando {n_actual} navegadores en paralelo...")
+                for w in self._workers:
+                    w.start()
+
+                # Esperar a que todos terminen
+                for w in self._workers:
+                    w.wait()
+
+                if not self.is_running:
+                    return   # Detenido por el usuario; _on_automation_stopped lo maneja
+
+                # Construir reporte final
+                with self._lock:
+                    final_success   = self._success
+                    final_error     = self._error
+                    final_recovered = self._recovered
+                    final_results   = list(self._all_results)
+
+                report = {
+                    'total':      total,
+                    'success':    final_success,
+                    'errors':     final_error + final_recovered,
+                    'recovered':  final_recovered,
+                    'results':    final_results,
+                    'timestamp':  datetime.now(),
+                    'excel_file': self.excel_file_path,
+                }
+                self.finished_success.emit(report)
+
+            except Exception as exc:
+                self.finished_error.emit(
+                    f"Error en el proceso: {exc}\n{traceback.format_exc()}")
+
+        # ── Slots vía DirectConnection (ejecutan en el hilo del worker) ─────
+
+        def _on_guide_result(self, worker_id: int, result: dict):
+            with self._lock:
+                self._done += 1
+                self._all_results.append(result)
+                done  = self._done
+                total = self._total
+                if result.get('success'):
+                    self._success += 1
+                elif result.get('recoverable'):
+                    self._recovered += 1
                 else:
-                    self.log_message.emit(f"📋 Guías a procesar: {', '.join(map(str, guias_list))}")
-                
-                # 2. Inicializar automator
-                self.log_message.emit("🚀 Inicializando navegador...")
-                automator = AMPMAutomator(headless=self.headless)
-                
-                # 3. Procesar cada guía CON MÁXIMA VELOCIDAD
-                success_count = 0
-                error_count = 0
-                recovered_count = 0
-                results = []
-                
-                for current_index, (index, guia_data) in enumerate(guias_df.iterrows(), 1):
-                    if not self.is_running:
-                        break
-                        
-                    # Cálculo del progreso
-                    progress = int((current_index) / total_guias * 100)
-                    guia_number = str(guia_data.get('numero_guia', 'N/A')).strip()
-                    self.progress_updated.emit(progress, f"Procesando guía {current_index} de {total_guias}")
-                    
-                    try:
-                        self.log_message.emit(f"📝 Procesando guía: {guia_number}")
-                        
-                        # Procesar la guía usando el automator optimizado
-                        result = automator.process_shipment_with_retry(guia_data)
-                        
-                        # Usar el número real de guía en los resultados
-                        result['guia_number'] = guia_number
-                        results.append(result)
-                        
-                        if result['success']:
-                            success_count += 1
-                            processing_time = result.get('processing_time', 0)
-                            self.log_message.emit(f"✅ Guía {guia_number} procesada exitosamente")
-                            self.log_message.emit(f"   ⏱️ Tiempo: {processing_time:.2f}s")
-                        else:
-                            if result.get('recoverable', False):
-                                recovered_count += 1
-                                self.log_message.emit(f"⚠️ GUÍA YA ENTREGADA: {guia_number} - {result.get('error', 'Error desconocido')}")
-                            else:
-                                error_count += 1
-                                self.log_message.emit(f"❌ ERROR: {guia_number} - {result.get('error', 'Error desconocido')}")
-                                
-                    except Exception as e:
-                        error_count += 1
-                        error_msg = f"❌ Error crítico en guía {guia_number}: {str(e)}"
-                        self.log_message.emit(error_msg)
-                        results.append({
-                            'success': False, 
-                            'error': error_msg,
-                            'guia_number': guia_number,
-                            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                            'recoverable': False
-                        })
-                    
-                    # ✅ PAUSA MÍNIMA entre guías para máxima velocidad (reducido de 1 a 0.2 segundos)
-                    if self.is_running:
-                        self.sleep(0.2)
-                
-                # 4. Cerrar navegador
-                automator.close()
-                
-                # 5. Preparar reporte final
-                if self.is_running:
-                    self.log_message.emit("📋 Generando reporte final...")
-                    
-                    # Contar resultados reales
-                    real_success_count = sum(1 for r in results if r.get('success') == True)
-                    real_recovered_count = sum(1 for r in results if r.get('recoverable') == True and not r.get('success'))
-                    real_error_count = sum(1 for r in results if not r.get('success') and not r.get('recoverable'))
-                    
-                    # Log de verificación
-                    self.log_message.emit(f"🔍 VERIFICACIÓN: Éxitos={real_success_count}, Entregadas={real_recovered_count}, Errores={real_error_count}")
-                    
-                    report_data = {
-                        'total': total_guias,
-                        'success': real_success_count,
-                        'errors': real_error_count + real_recovered_count,
-                        'recovered': real_recovered_count,
-                        'results': results,
-                        'timestamp': datetime.now(),
-                        'excel_file': self.excel_file_path
-                    }
-                    
-                    self.finished_success.emit(report_data)
-                    
-            except Exception as e:
-                error_msg = f"Error en el hilo de automatización: {str(e)}\n{traceback.format_exc()}"
-                logger.error(error_msg)
-                self.finished_error.emit(f"Error en el proceso: {str(e)}")
-        
+                    self._error += 1
+
+            pct    = int(done / total * 100) if total else 0
+            guia   = result.get('guia_number', '')
+            icon   = '✅' if result.get('success') else ('⚠️' if result.get('recoverable') else '❌')
+            self.progress_updated.emit(pct,
+                f"{icon} [{worker_id + 1}] {guia} — {done}/{total}")
+
+        def _on_worker_log(self, worker_id: int, msg: str):
+            self.log_message.emit(msg)
+
+        def _on_worker_done(self, worker_id: int, success: int,
+                            error: int, recovered: int):
+            # Los contadores ya se actualizan en _on_guide_result;
+            # este signal solo sirve para el log de cierre del worker.
+            pass
+
+        # ────────────────────────────────────────────────────────────
+
+        def stop(self):
+            """Detener todos los workers"""
+            self.is_running = False
+            for w in self._workers:
+                w.stop()
+            self.log_message.emit("⏹️ Proceso detenido por el usuario")
+
         def sleep(self, seconds):
-            """Sleep optimizado que respeta la señal de stop - VERSIÓN MÁS RÁPIDA"""
-            for _ in range(int(seconds * 20)):  # Más granular para mejor respuesta
+            """Compatibilidad — no usado en modo paralelo"""
+            for _ in range(int(seconds * 20)):
                 if not self.is_running:
                     break
-                QThread.msleep(50)  # Reducido de 100 a 50 ms para mejor respuesta
-        
-        def stop(self):
-            """Detener la ejecución del hilo"""
-            self.is_running = False
-            self.log_message.emit("⏹️ Proceso detenido por el usuario")
+                QThread.msleep(50)
 
     class PasswordDialog(QDialog):
         """Diálogo para ingresar la contraseña de administrador"""
