@@ -4,7 +4,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException, StaleElementReferenceException, ElementClickInterceptedException
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 import time
@@ -113,7 +113,7 @@ class AMPMAutomatorRobusto:
                 "//div[contains(@class, 'ui-dialog') and contains(@style, 'display: block')]",
                 "//div[@role='dialog' and contains(@style, 'display: block')]",
                 "//div[@id='errorTPAK']",
-                "//div[contains(@class, 'modal')]"
+                "//div[contains(@class, 'modal') and not(@id='divLoading') and not(contains(@class,'modalLoading'))]"
             ]
             
             modal_detected = False
@@ -181,7 +181,7 @@ class AMPMAutomatorRobusto:
             close_strategies = [
                 # Botones Ok/Aceptar - PRIMERA OPCIÓN MÁS RÁPIDA
                 lambda: self._click_element_by_xpath(
-                    "//button[contains(@class, 'ui-button') and (contains(text(), 'Ok') or contains(text(), 'OK') or contains(text(), 'Aceptar'))]"
+                    "//button[contains(@class, 'ui-button') and (contains(., 'Ok') or contains(., 'OK') or contains(., 'Aceptar'))]"
                 ),
                 # Presionar ESC - SEGUNDA OPCIÓN RÁPIDA
                 lambda: ActionChains(self.driver).send_keys(Keys.ESCAPE).perform(),
@@ -251,7 +251,6 @@ class AMPMAutomatorRobusto:
         try:
             # Hacer scroll al elemento rápidamente
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-            time.sleep(0.2)  # Reducido de 0.5 a 0.2
             
             # Limpiar campo
             element.clear()
@@ -275,18 +274,20 @@ class AMPMAutomatorRobusto:
             modal_result = self.check_and_close_modals()
             if modal_result:
                 logger.info("🔄 Modal cerrado antes del click")
-                time.sleep(0.5)  # Reducido de 1 a 0.5
+                # Esperar a que el loading desaparezca tras cerrar el modal
+                # (el dialog TPAK ADMINISTRACION oculta divLoading solo al clickear Ok)
+                self._wait_for_loading_to_disappear(5)
+                time.sleep(0.2)
             
             # Hacer scroll al elemento rápidamente
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
-            time.sleep(0.2)  # Reducido de 0.5 a 0.2
             
             if element.is_displayed() and element.is_enabled():
                 element.click()
                 logger.info(f"✅ Click exitoso en {description}")
                 
                 # Verificar si apareció algún modal después del click
-                time.sleep(0.5)  # Reducido de 1 a 0.5
+                time.sleep(0.1)
                 self.check_and_close_modals()
                 
                 return True
@@ -294,6 +295,19 @@ class AMPMAutomatorRobusto:
                 logger.warning(f"⚠️ Elemento {description} no está interactuable")
                 return False
                 
+        except ElementClickInterceptedException:
+            # divLoading u overlay cubriendo el elemento — esperar y reintentar con JS
+            logger.warning(f"⚠️ Overlay cubriendo {description}, esperando loading y reintentando con JS...")
+            self._wait_for_loading_to_disappear(8)
+            try:
+                self.driver.execute_script("arguments[0].click();", element)
+                logger.info(f"✅ Click JS exitoso en {description}")
+                time.sleep(0.1)
+                self.check_and_close_modals()
+                return True
+            except Exception as js_err:
+                logger.error(f"❌ Click JS también falló en {description}: {js_err}")
+                return False
         except (ElementNotInteractableException, StaleElementReferenceException) as e:
             logger.warning(f"⚠️ Error al hacer click en {description}, verificando modales...")
             self.check_and_close_modals()
@@ -575,7 +589,6 @@ class AMPMAutomatorRobusto:
             
             # ✅ ESPERAR PROCESAMIENTO Y VERIFICAR LOADING - MÁS RÁPIDO
             self._wait_for_loading_to_disappear(5)
-            time.sleep(1)  # Reducido de 3 a 1 segundo - Espera adicional después de entregar
             
             # ✅ VERIFICACIÓN RÁPIDA DESPUÉS DE ENTREGAR
             modal_result = self.check_and_close_modals()
@@ -622,7 +635,7 @@ class AMPMAutomatorRobusto:
                 )
                 if self.safe_click(nuevo_button, "botón Nuevo"):
                     logger.info("✅ Campos limpiados con botón Nuevo")
-                    time.sleep(0.3)  # Reducido de 1 a 0.3 segundos
+                    time.sleep(0.1)
             except:
                 logger.info("ℹ️ No se encontró el botón Nuevo")
             
