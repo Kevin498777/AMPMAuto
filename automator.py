@@ -196,10 +196,27 @@ class AMPMAutomatorRobusto:
                     if strategy():
                         logger.info(f"✅ Modal cerrado con estrategia {close_strategies.index(strategy) + 1}")
                         time.sleep(0.5)  # Reducido de 1 a 0.5
+                        # Limpiar div#errorTPAK — persiste en DOM aunque se cierre
+                        # el dialog wrapper jQuery UI, causando cascade en guias siguientes
+                        try:
+                            self.driver.execute_script(
+                                "var e=document.getElementById('errorTPAK');"
+                                "if(e){e.style.display='none';e.innerHTML='';}"
+                            )
+                        except Exception:
+                            pass
                         return True
                 except:
                     continue
-                
+            
+            # Si ninguna estrategia cerró el modal, forzar limpieza de errorTPAK
+            try:
+                self.driver.execute_script(
+                    "var e=document.getElementById('errorTPAK');"
+                    "if(e){e.style.display='none';e.innerHTML='';}"
+                )
+            except Exception:
+                pass
             return False
             
         except Exception as e:
@@ -490,8 +507,25 @@ class AMPMAutomatorRobusto:
             guia_field.send_keys(Keys.ENTER)
             
             check_timeout()
-            time.sleep(2)  # Reducido de 4 a 2 segundos - Esperar a que carguen los detalles
-            
+            # Espera dinámica — sale en cuanto la página está lista o aparece error
+            # Mucho más rápido que sleep(2) para guías ya entregadas (el portal
+            # muestra el error de inmediato sin necesidad de esperar 2 segundos fijos)
+            try:
+                from selenium.webdriver.support.ui import WebDriverWait as _WDW
+                _WDW(self.driver, 8, poll_frequency=0.2).until(
+                    lambda d: (
+                        bool(d.find_elements(By.ID, "btnEntregar"))
+                        or any(
+                            e.is_displayed() and bool(e.text.strip())
+                            for e in d.find_elements(
+                                By.CSS_SELECTOR, "#errorTPAK, .ui-dialog-content"
+                            )
+                        )
+                    )
+                )
+            except Exception:
+                pass
+
             # VERIFICACIÓN RÁPIDA DESPUÉS DE INGRESAR GUÍA
             modal_result = self.check_and_close_modals()
             if modal_result == "guia_no_asignada":
@@ -510,29 +544,6 @@ class AMPMAutomatorRobusto:
                 }
             
             check_timeout()
-            
-            # ✅ VERIFICACIÓN EN HTML COMPLETO - MÁS RÁPIDO
-            page_source = self.driver.page_source
-            if "no ha sido asignada a ninguno de los convenios" in page_source.lower():
-                logger.error(f"❌ Guía {guia_final} no asignada al convenio (detectado en HTML)")
-                self.check_and_close_modals()
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': "La guía no está asignada al convenio",
-                    'recoverable': False,
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                }
-            elif "ya se encuentra entregada" in page_source.lower():
-                logger.error(f"❌ Guía {guia_final} ya entregada (detectado en HTML)")
-                self.check_and_close_modals()
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': "La guía ya se encuentra entregada",
-                    'recoverable': True,
-                    'timestamp': time.strftime('%Y-%m-%d %H:%M:%S')
-                }
             
             # ✅ ESPERAR A QUE DESAPAREZCA EL LOADING - MÁS RÁPIDO
             self._wait_for_loading_to_disappear(5)
@@ -587,23 +598,6 @@ class AMPMAutomatorRobusto:
                     'success': False, 
                     'guia_number': guia_final,
                     'error': "Error al entregar - modal detectado",
-                    'recoverable': True
-                }
-            
-            # ✅ VERIFICACIÓN FINAL EN HTML - MÁS RÁPIDO
-            page_source = self.driver.page_source.lower()
-            if "no ha sido asignada" in page_source:
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': "La guía no está asignada al convenio",
-                    'recoverable': False
-                }
-            elif "ya se encuentra entregada" in page_source:
-                return {
-                    'success': False,
-                    'guia_number': guia_final,
-                    'error': "La guía ya se encuentra entregada", 
                     'recoverable': True
                 }
             
